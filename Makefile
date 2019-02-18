@@ -722,7 +722,7 @@ export LLVM_AR LLVM_NM
 
 # Set O3 optimization level for LTO
 LDFLAGS		+= --plugin-opt=O3
-
+KBUILD_LDFLAGS	+= --lto-O3
 endif
 
 # The arch Makefile can set ARCH_{CPP,A,C}FLAGS to override the default
