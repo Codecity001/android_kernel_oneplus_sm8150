@@ -489,6 +489,10 @@ asmlinkage long compat_sys_epoll_pwait2(int epfd,
 			const struct __kernel_timespec __user *timeout,
 			const compat_sigset_t __user *sigmask,
 			compat_size_t sigsetsize);
+asmlinkage long compat_sys_process_madvise(int pidfd,
+			const struct compat_iovec __user *vec,
+			compat_size_t vlen, int behavior,
+			unsigned int flags);
 
 asmlinkage long compat_sys_utime(const char __user *filename,
 				 struct compat_utimbuf __user *t);
