@@ -684,6 +684,10 @@ asmlinkage long sys_epoll_pwait2(int epfd, struct epoll_event __user *events,
 				 const struct __kernel_timespec __user *timeout,
 				 const sigset_t __user *sigmask,
 				 size_t sigsetsize);
+asmlinkage long sys_process_madvise(int pidfd,
+				    const struct iovec __user *vec,
+				    size_t vlen, int behavior,
+				    unsigned int flags);
 asmlinkage long sys_gethostname(char __user *name, int len);
 asmlinkage long sys_sethostname(char __user *name, int len);
 asmlinkage long sys_setdomainname(char __user *name, int len);
