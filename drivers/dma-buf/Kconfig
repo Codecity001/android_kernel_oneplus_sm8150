@@ -40,4 +40,11 @@ config DEBUG_DMA_BUF_REF
 	  matching the get/put call stacks.  This feature consumes extra memory
 	  in order to save the stack traces using STACKDEPOT.
 
+config DMABUF_SYSFS_STATS
+	bool "DMA-BUF sysfs statistics"
+	depends on DMA_SHARED_BUFFER
+	---help---
+	  Choose this option to enable DMA-BUF sysfs statistics
+	  in location /sys/kernel/dmabuf/buffers.
+
 endmenu
