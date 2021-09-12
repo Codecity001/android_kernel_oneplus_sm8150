@@ -4772,6 +4772,8 @@ static int binder_thread_release(struct binder_proc *proc,
 
 		if (t->to_thread == thread) {
 			thread->proc->outstanding_txns--;
+			if (!thread->proc->outstanding_txns && thread->proc->is_frozen)
+				wake_up_interruptible_all(&thread->proc->freeze_wait);
 			t->to_proc = NULL;
 			t->to_thread = NULL;
 			if (t->buffer) {
@@ -5053,6 +5055,8 @@ static int binder_ioctl_freeze(struct binder_freeze_info *info,
 		binder_inner_proc_lock(target_proc);
 		target_proc->is_frozen = false;
 		binder_inner_proc_unlock(target_proc);
+	} else {
+		ret = 0;
 	}
 
 	return ret;
