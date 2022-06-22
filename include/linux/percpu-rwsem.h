@@ -133,7 +133,8 @@ static inline void percpu_rwsem_release(struct percpu_rw_semaphore *sem,
 	lock_release(&sem->rw_sem.dep_map, 1, ip);
 #ifdef CONFIG_RWSEM_SPIN_ON_OWNER
 	if (!read)
-		sem->rw_sem.owner = RWSEM_OWNER_UNKNOWN;
+		rwsem_set_owner_preserve_flags(&sem->rw_sem,
+					      RWSEM_OWNER_UNKNOWN);
 #endif
 }
 
@@ -143,7 +144,7 @@ static inline void percpu_rwsem_acquire(struct percpu_rw_semaphore *sem,
 	lock_acquire(&sem->rw_sem.dep_map, 0, 1, read, 1, NULL, ip);
 #ifdef CONFIG_RWSEM_SPIN_ON_OWNER
 	if (!read)
-		sem->rw_sem.owner = current;
+		rwsem_set_owner_preserve_flags(&sem->rw_sem, current);
 #endif
 }
 
