@@ -1,44 +1,40 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __INTERNAL_RWSEM_H
+#define __INTERNAL_RWSEM_H
+
+#include <linux/jiffies.h>
+#include <linux/rwsem.h>
+
 /*
- * The owner field of the rw_semaphore structure will be set to
- * RWSEM_READER_OWNED when a reader grabs the lock. A writer will clear
- * the owner field when it unlocks. A reader, on the other hand, will
- * not touch the owner field when it unlocks.
- *
- * In essence, the owner field now has the following 4 states:
- *  1) 0
- *     - lock is free or the owner hasn't set the field yet
- *  2) RWSEM_READER_OWNED
- *     - lock is currently or previously owned by readers (lock is free
- *       or not set by owner yet)
- *  3) RWSEM_ANONYMOUSLY_OWNED bit set with some other bits set as well
- *     - lock is owned by an anonymous writer, so spinning on the lock
- *       owner should be disabled.
- *  4) Other non-zero value
- *     - a writer owns the lock and other writers can spin on the lock owner.
+ * The least significant owner bits are defined in <linux/rwsem.h> so helper
+ * users outside kernel/locking/ can preserve the nonspinnable state when they
+ * transfer lock ownership without dropping the underlying rwsem.
  */
-#define RWSEM_ANONYMOUSLY_OWNED	(1UL << 0)
-#define RWSEM_READER_OWNED	((struct task_struct *)RWSEM_ANONYMOUSLY_OWNED)
 
-enum rwsem_waiter_type {
-	RWSEM_WAITING_FOR_WRITE,
-	RWSEM_WAITING_FOR_READ
-};
+/*
+ * On 64-bit architectures, the bit definitions of count are:
+ *
+ * Bit  0    - writer locked bit
+ * Bit  1    - waiters present bit
+ * Bit  2    - handoff bit
+ * Bits 3-7  - reserved
+ * Bits 8-62 - reader count
+ * Bit  63   - read fail bit
+ */
+#define RWSEM_WRITER_LOCKED	(1UL << 0)
+#define RWSEM_FLAG_WAITERS	(1UL << 1)
+#define RWSEM_FLAG_HANDOFF	(1UL << 2)
+#define RWSEM_FLAG_READFAIL	(1UL << (BITS_PER_LONG - 1))
 
-struct rwsem_waiter {
-	struct list_head list;
-	struct task_struct *task;
-	enum rwsem_waiter_type type;
-};
+#define RWSEM_READER_SHIFT	8
+#define RWSEM_READER_BIAS	(1UL << RWSEM_READER_SHIFT)
+#define RWSEM_READER_MASK	(~(RWSEM_READER_BIAS - 1))
+#define RWSEM_WRITER_MASK	RWSEM_WRITER_LOCKED
+#define RWSEM_LOCK_MASK		(RWSEM_WRITER_MASK | RWSEM_READER_MASK)
+#define RWSEM_READ_FAILED_MASK	(RWSEM_WRITER_MASK | RWSEM_FLAG_WAITERS | \
+				 RWSEM_FLAG_HANDOFF | RWSEM_FLAG_READFAIL)
 
 #ifdef CONFIG_RWSEM_SPIN_ON_OWNER
-/*
- * All writes to owner are protected by WRITE_ONCE() to make sure that
- * store tearing can't happen as optimistic spinners may read and use
- * the owner value concurrently without lock. Read from owner, however,
- * may not need READ_ONCE() as long as the pointer value is only used
- * for comparison and isn't being dereferenced.
- */
 static inline void rwsem_set_owner(struct rw_semaphore *sem)
 {
 	WRITE_ONCE(sem->owner, current);
@@ -49,33 +45,86 @@ static inline void rwsem_clear_owner(struct rw_semaphore *sem)
 	WRITE_ONCE(sem->owner, NULL);
 }
 
+static inline bool rwsem_cmpxchg_owner(struct rw_semaphore *sem,
+				       unsigned long *old, unsigned long new)
+{
+	unsigned long prev;
+
+	prev = cmpxchg((unsigned long *)&sem->owner, *old, new);
+	if (prev == *old)
+		return true;
+
+	*old = prev;
+	return false;
+}
+
+static inline bool rwsem_test_oflags(struct rw_semaphore *sem,
+				     unsigned long flags)
+{
+	return ((unsigned long)READ_ONCE(sem->owner)) & flags;
+}
+
+static inline void __rwsem_set_reader_owned(struct rw_semaphore *sem,
+					    struct task_struct *owner)
+{
+	unsigned long val = (unsigned long)owner | RWSEM_READER_OWNED |
+		(((unsigned long)READ_ONCE(sem->owner)) &
+		 RWSEM_RD_NONSPINNABLE);
+
+	WRITE_ONCE(sem->owner, (struct task_struct *)val);
+}
+
 static inline void rwsem_set_reader_owned(struct rw_semaphore *sem)
 {
-	/*
-	 * We check the owner value first to make sure that we will only
-	 * do a write to the rwsem cacheline when it is really necessary
-	 * to minimize cacheline contention.
-	 */
-	if (sem->owner != RWSEM_READER_OWNED)
-		WRITE_ONCE(sem->owner, RWSEM_READER_OWNED);
+	__rwsem_set_reader_owned(sem, current);
 }
 
-/*
- * Return true if the a rwsem waiter can spin on the rwsem's owner
- * and steal the lock, i.e. the lock is not anonymously owned.
- * N.B. !owner is considered spinnable.
- */
-static inline bool is_rwsem_owner_spinnable(struct task_struct *owner)
+static inline void rwsem_clear_reader_owned(struct rw_semaphore *sem)
 {
-	return !((unsigned long)owner & RWSEM_ANONYMOUSLY_OWNED);
 }
 
-/*
- * Return true if rwsem is owned by an anonymous writer or readers.
- */
-static inline bool rwsem_has_anonymous_owner(struct task_struct *owner)
+static inline bool is_rwsem_reader_owned(struct rw_semaphore *sem)
 {
-	return (unsigned long)owner & RWSEM_ANONYMOUSLY_OWNED;
+	return rwsem_test_oflags(sem, RWSEM_READER_OWNED);
+}
+
+static inline void rwsem_set_nonspinnable(struct rw_semaphore *sem)
+{
+	unsigned long owner = (unsigned long)READ_ONCE(sem->owner);
+
+	do {
+		if (!(owner & RWSEM_READER_OWNED))
+			break;
+		if (owner & RWSEM_NONSPINNABLE)
+			break;
+	} while (!rwsem_cmpxchg_owner(sem, &owner,
+				      owner | RWSEM_NONSPINNABLE));
+}
+
+static inline bool rwsem_read_trylock(struct rw_semaphore *sem)
+{
+	long cnt = atomic_long_add_return_acquire(RWSEM_READER_BIAS,
+						  &sem->count);
+
+	if (WARN_ON_ONCE(cnt < 0))
+		rwsem_set_nonspinnable(sem);
+	return !(cnt & RWSEM_READ_FAILED_MASK);
+}
+
+static inline struct task_struct *rwsem_owner(struct rw_semaphore *sem)
+{
+	return (struct task_struct *)
+		(((unsigned long)READ_ONCE(sem->owner)) &
+		 ~RWSEM_OWNER_FLAGS_MASK);
+}
+
+static inline struct task_struct *
+rwsem_owner_flags(struct rw_semaphore *sem, unsigned long *pflags)
+{
+	unsigned long owner = (unsigned long)READ_ONCE(sem->owner);
+
+	*pflags = owner & RWSEM_OWNER_FLAGS_MASK;
+	return (struct task_struct *)(owner & ~RWSEM_OWNER_FLAGS_MASK);
 }
 #else
 static inline void rwsem_set_owner(struct rw_semaphore *sem)
@@ -86,64 +135,86 @@ static inline void rwsem_clear_owner(struct rw_semaphore *sem)
 {
 }
 
+static inline void __rwsem_set_reader_owned(struct rw_semaphore *sem,
+					    struct task_struct *owner)
+{
+}
+
 static inline void rwsem_set_reader_owned(struct rw_semaphore *sem)
 {
 }
+
+static inline void rwsem_clear_reader_owned(struct rw_semaphore *sem)
+{
+}
+
+static inline bool is_rwsem_reader_owned(struct rw_semaphore *sem)
+{
+	return true;
+}
+
+static inline void rwsem_set_nonspinnable(struct rw_semaphore *sem)
+{
+}
+
+static inline bool rwsem_test_oflags(struct rw_semaphore *sem,
+				     unsigned long flags)
+{
+	return false;
+}
+
+static inline bool rwsem_read_trylock(struct rw_semaphore *sem)
+{
+	return !(atomic_long_add_return_acquire(RWSEM_READER_BIAS, &sem->count) &
+		 RWSEM_READ_FAILED_MASK);
+}
+
+static inline struct task_struct *rwsem_owner(struct rw_semaphore *sem)
+{
+	return NULL;
+}
+
+static inline struct task_struct *
+rwsem_owner_flags(struct rw_semaphore *sem, unsigned long *pflags)
+{
+	*pflags = 0;
+	return NULL;
+}
 #endif
 
-#ifdef CONFIG_RWSEM_PRIO_AWARE
-
-#define RWSEM_MAX_PREEMPT_ALLOWED 3000
+enum rwsem_waiter_type {
+	RWSEM_WAITING_FOR_WRITE,
+	RWSEM_WAITING_FOR_READ
+};
 
 /*
- * Return true if current waiter is added in the front of the rwsem wait list.
+ * The local RWSEM_PRIO_AWARE waiter reshuffling is intentionally not
+ * preserved: upstream handoff fairness depends on strict FIFO writer order.
  */
-static inline bool rwsem_list_add_per_prio(struct rwsem_waiter *waiter_in,
-				    struct rw_semaphore *sem)
-{
-	struct list_head *pos;
-	struct list_head *head;
-	struct rwsem_waiter *waiter = NULL;
+struct rwsem_waiter {
+	struct list_head list;
+	struct task_struct *task;
+	enum rwsem_waiter_type type;
+	unsigned long timeout;
+	unsigned long last_rowner;
+};
 
-	pos = head = &sem->wait_list;
-	/*
-	 * Rules for task prio aware rwsem wait list queueing:
-	 * 1:	Only try to preempt waiters with which task priority
-	 *	which is higher than DEFAULT_PRIO.
-	 * 2:	To avoid starvation, add count to record
-	 *	how many high priority waiters preempt to queue in wait
-	 *	list.
-	 *	If preempt count is exceed RWSEM_MAX_PREEMPT_ALLOWED,
-	 *	use simple fifo until wait list is empty.
-	 */
-	if (list_empty(head)) {
-		list_add_tail(&waiter_in->list, head);
-		sem->m_count = 0;
-		return true;
-	}
+#define rwsem_first_waiter(sem) \
+	list_first_entry(&(sem)->wait_list, struct rwsem_waiter, list)
 
-	if (waiter_in->task->prio < DEFAULT_PRIO
-		&& sem->m_count < RWSEM_MAX_PREEMPT_ALLOWED) {
+enum rwsem_wake_type {
+	RWSEM_WAKE_ANY,
+	RWSEM_WAKE_READERS,
+	RWSEM_WAKE_READ_OWNED
+};
 
-		list_for_each(pos, head) {
-			waiter = list_entry(pos, struct rwsem_waiter, list);
-			if (waiter->task->prio > waiter_in->task->prio) {
-				list_add(&waiter_in->list, pos->prev);
-				sem->m_count++;
-				return &waiter_in->list == head->next;
-			}
-		}
-	}
+enum writer_wait_state {
+	WRITER_NOT_FIRST,
+	WRITER_FIRST,
+	WRITER_HANDOFF
+};
 
-	list_add_tail(&waiter_in->list, head);
+#define RWSEM_WAIT_TIMEOUT	DIV_ROUND_UP(HZ, 250)
+#define MAX_READERS_WAKEUP	0x100
 
-	return false;
-}
-#else
-static inline bool rwsem_list_add_per_prio(struct rwsem_waiter *waiter_in,
-				    struct rw_semaphore *sem)
-{
-	list_add_tail(&waiter_in->list, &sem->wait_list);
-	return false;
-}
-#endif
+#endif /* __INTERNAL_RWSEM_H */
