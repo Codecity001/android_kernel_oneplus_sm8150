@@ -26,39 +26,71 @@ struct rw_semaphore;
 #include <linux/rwsem-spinlock.h> /* use a generic implementation */
 #define __RWSEM_INIT_COUNT(name)	.count = RWSEM_UNLOCKED_VALUE
 #else
-/* All arch specific implementations share the same struct */
+/*
+ * For an uncontended rwsem, count and owner are the only fields a task
+ * needs to touch when acquiring the rwsem. Keep them adjacent so the
+ * common fastpath stays within a single cacheline.
+ */
 struct rw_semaphore {
 	atomic_long_t count;
-	struct list_head wait_list;
-	raw_spinlock_t wait_lock;
 #ifdef CONFIG_RWSEM_SPIN_ON_OWNER
-	struct optimistic_spin_queue osq; /* spinner MCS lock */
 	/*
-	 * Write owner. Used as a speculative check to see
-	 * if the owner is running on the cpu.
+	 * Write owner or one of the read owners plus embedded state flags.
+	 * The low owner bits are used internally by the rwsem slowpath.
 	 */
 	struct task_struct *owner;
+	struct optimistic_spin_queue osq; /* spinner MCS lock */
 #endif
+	raw_spinlock_t wait_lock;
+	struct list_head wait_list;
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lockdep_map	dep_map;
 #endif
-#ifdef CONFIG_RWSEM_PRIO_AWARE
-	/* count for waiters preempt to queue in wait list */
-	long m_count;
-#endif
 };
 
+#ifdef CONFIG_RWSEM_SPIN_ON_OWNER
 /*
- * Setting bit 0 of the owner field with other non-zero bits will indicate
+ * The low owner bits carry rwsem-internal state when owner tracking is
+ * enabled.
+ */
+#define RWSEM_READER_OWNED	(1UL << 0)
+#define RWSEM_RD_NONSPINNABLE	(1UL << 1)
+#define RWSEM_WR_NONSPINNABLE	(1UL << 2)
+#define RWSEM_NONSPINNABLE	(RWSEM_RD_NONSPINNABLE | RWSEM_WR_NONSPINNABLE)
+#define RWSEM_OWNER_FLAGS_MASK	(RWSEM_READER_OWNED | RWSEM_NONSPINNABLE)
+
+/*
+ * Setting all bits of the owner field except bit 0 will indicate
  * that the rwsem is writer-owned with an unknown owner.
  */
-#define RWSEM_OWNER_UNKNOWN	((struct task_struct *)-1L)
+#define RWSEM_OWNER_UNKNOWN	((struct task_struct *)-2L)
 
+static inline void rwsem_set_owner_preserve_flags(struct rw_semaphore *sem,
+						  struct task_struct *owner)
+{
+	unsigned long preserved;
+
+	preserved = (unsigned long)READ_ONCE(sem->owner) & RWSEM_NONSPINNABLE;
+	WRITE_ONCE(sem->owner, (struct task_struct *)
+		   ((unsigned long)owner | preserved));
+}
+#else
+#define RWSEM_OWNER_UNKNOWN	NULL
+
+static inline void rwsem_set_owner_preserve_flags(struct rw_semaphore *sem,
+						  struct task_struct *owner)
+{
+}
+#endif
+
+/*
+ * Legacy WAITING_BIAS backends still call these helpers directly.
+ */
 extern struct rw_semaphore *rwsem_down_read_failed(struct rw_semaphore *sem);
 extern struct rw_semaphore *rwsem_down_read_failed_killable(struct rw_semaphore *sem);
 extern struct rw_semaphore *rwsem_down_write_failed(struct rw_semaphore *sem);
 extern struct rw_semaphore *rwsem_down_write_failed_killable(struct rw_semaphore *sem);
-extern struct rw_semaphore *rwsem_wake(struct rw_semaphore *);
+extern struct rw_semaphore *rwsem_wake(struct rw_semaphore *sem);
 extern struct rw_semaphore *rwsem_downgrade_wake(struct rw_semaphore *sem);
 
 /* Include the arch specific part */
@@ -82,15 +114,9 @@ static inline int rwsem_is_locked(struct rw_semaphore *sem)
 #endif
 
 #ifdef CONFIG_RWSEM_SPIN_ON_OWNER
-#define __RWSEM_OPT_INIT(lockname) , .osq = OSQ_LOCK_UNLOCKED, .owner = NULL
+#define __RWSEM_OPT_INIT(lockname) , .owner = NULL, .osq = OSQ_LOCK_UNLOCKED
 #else
 #define __RWSEM_OPT_INIT(lockname)
-#endif
-
-#ifdef CONFIG_RWSEM_PRIO_AWARE
-#define __RWSEM_PRIO_AWARE_INIT(lockname)	.m_count = 0
-#else
-#define __RWSEM_PRIO_AWARE_INIT(lockname)
 #endif
 
 #define __RWSEM_INITIALIZER(name)				\
@@ -98,8 +124,7 @@ static inline int rwsem_is_locked(struct rw_semaphore *sem)
 	  .wait_list = LIST_HEAD_INIT((name).wait_list),	\
 	  .wait_lock = __RAW_SPIN_LOCK_UNLOCKED(name.wait_lock)	\
 	  __RWSEM_OPT_INIT(name)				\
-	  __RWSEM_DEP_MAP_INIT(name),				\
-	  __RWSEM_PRIO_AWARE_INIT(name) }
+	  __RWSEM_DEP_MAP_INIT(name) }
 
 #define DECLARE_RWSEM(name) \
 	struct rw_semaphore name = __RWSEM_INITIALIZER(name)
@@ -179,7 +204,8 @@ extern void downgrade_write(struct rw_semaphore *sem);
 extern void down_read_nested(struct rw_semaphore *sem, int subclass);
 extern void down_write_nested(struct rw_semaphore *sem, int subclass);
 extern int down_write_killable_nested(struct rw_semaphore *sem, int subclass);
-extern void _down_write_nest_lock(struct rw_semaphore *sem, struct lockdep_map *nest_lock);
+extern void _down_write_nest_lock(struct rw_semaphore *sem,
+				  struct lockdep_map *nest_lock);
 
 # define down_write_nest_lock(sem, nest_lock)			\
 do {								\
