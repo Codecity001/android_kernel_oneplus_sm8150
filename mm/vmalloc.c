@@ -1820,6 +1820,9 @@ void *vmap(struct page **pages, unsigned int count,
 
 	might_sleep();
 
+	if (WARN_ON_ONCE(flags & VM_FLUSH_RESET_PERMS))
+		return NULL;
+
 	if (count > totalram_pages)
 		return NULL;
 
@@ -3001,4 +3004,3 @@ static int __init proc_vmalloc_init(void)
 module_init(proc_vmalloc_init);
 
 #endif
-
