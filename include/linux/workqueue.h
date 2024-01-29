@@ -28,7 +28,7 @@ void delayed_work_timer_fn(unsigned long __data);
 
 enum {
 	WORK_STRUCT_PENDING_BIT	= 0,	/* work item is pending execution */
-	WORK_STRUCT_DELAYED_BIT	= 1,	/* work item is delayed */
+	WORK_STRUCT_INACTIVE_BIT = 1,	/* work item is inactive */
 	WORK_STRUCT_PWQ_BIT	= 2,	/* data points to pwq */
 	WORK_STRUCT_LINKED_BIT	= 3,	/* next work is linked to this one */
 #ifdef CONFIG_DEBUG_OBJECTS_WORK
@@ -41,7 +41,7 @@ enum {
 	WORK_STRUCT_COLOR_BITS	= 4,
 
 	WORK_STRUCT_PENDING	= 1 << WORK_STRUCT_PENDING_BIT,
-	WORK_STRUCT_DELAYED	= 1 << WORK_STRUCT_DELAYED_BIT,
+	WORK_STRUCT_INACTIVE	= 1 << WORK_STRUCT_INACTIVE_BIT,
 	WORK_STRUCT_PWQ		= 1 << WORK_STRUCT_PWQ_BIT,
 	WORK_STRUCT_LINKED	= 1 << WORK_STRUCT_LINKED_BIT,
 #ifdef CONFIG_DEBUG_OBJECTS_WORK
@@ -331,6 +331,7 @@ enum {
 	WQ_MAX_ACTIVE		= 512,	  /* I like 512, better ideas? */
 	WQ_MAX_UNBOUND_PER_CPU	= 4,	  /* 4 * #cpus for unbound wq */
 	WQ_DFL_ACTIVE		= WQ_MAX_ACTIVE / 2,
+	WQ_DFL_MIN_ACTIVE	= 8,	  /* floor for distributed unbound max_active */
 };
 
 /* unbound wq's aren't per-cpu, scale max_active according to #cpus */
@@ -384,8 +385,18 @@ __alloc_workqueue_key(const char *fmt, unsigned int flags, int max_active,
  * @max_active: max in-flight work items, 0 for default
  * @args...: args for @fmt
  *
- * Allocate a workqueue with the specified parameters.  For detailed
- * information on WQ_* flags, please refer to
+ * For a per-cpu workqueue, @max_active limits the number of in-flight work
+ * items for each CPU.
+ *
+ * For an unbound workqueue, @max_active limits the number of in-flight work
+ * items for the whole system.  As enforcing a single shared counter would be
+ * expensive, the configured limit is distributed across the effective unbound
+ * pool_workqueues according to their online CPU coverage.  Each share is
+ * clamped to at least min(@max_active, %WQ_DFL_MIN_ACTIVE), which means the
+ * sum of distributed limits may exceed @max_active to preserve forward
+ * progress.
+ *
+ * For detailed information on WQ_* flags, please refer to
  * Documentation/core-api/workqueue.rst.
  *
  * The __lock_name macro dance is to guarantee that single lock_class_key
