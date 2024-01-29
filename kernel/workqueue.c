@@ -211,7 +211,7 @@ struct pool_workqueue {
 						/* L: nr of in_flight works */
 	int			nr_active;	/* L: nr of active works */
 	int			max_active;	/* L: max active works */
-	struct list_head	delayed_works;	/* L: delayed works */
+	struct list_head	inactive_works;	/* L: inactive works */
 	struct list_head	pwqs_node;	/* WR: node on wq->pwqs */
 	struct list_head	mayday_node;	/* MD: node on wq->maydays */
 
@@ -257,6 +257,7 @@ struct workqueue_struct {
 
 	int			nr_drainers;	/* WQ: drain in progress */
 	int			saved_max_active; /* WQ: saved pwq max_active */
+	int			saved_min_active; /* WQ: saved unbound min_active */
 
 	struct workqueue_attrs	*unbound_attrs;	/* PW: only for unbound wqs */
 	struct pool_workqueue	*dfl_pwq;	/* PW: only for unbound wqs */
@@ -569,7 +570,7 @@ static struct pool_workqueue *unbound_pwq_by_node(struct workqueue_struct *wq,
 
 	/*
 	 * XXX: @node can be NUMA_NO_NODE if CPU goes offline while a
-	 * delayed item is pending.  The plan is to keep CPU -> NODE
+	 * inactive item is pending.  The plan is to keep CPU -> NODE
 	 * mapping valid and stable across CPU on/offlines.  Once that
 	 * happens, this workaround can be removed.
 	 */
@@ -577,6 +578,72 @@ static struct pool_workqueue *unbound_pwq_by_node(struct workqueue_struct *wq,
 		return wq->dfl_pwq;
 
 	return rcu_dereference_raw(wq->numa_pwq_tbl[node]);
+}
+
+static const cpumask_t *unbound_effective_cpumask(struct workqueue_struct *wq)
+{
+	lockdep_assert_held(&wq->mutex);
+	return wq->dfl_pwq->pool->attrs->cpumask;
+}
+
+static int wq_unbound_online_cpus(struct workqueue_struct *wq, int off_cpu)
+{
+	const cpumask_t *effective = unbound_effective_cpumask(wq);
+	int cpu, nr_cpus = 0;
+
+	lockdep_assert_held(&wq->mutex);
+
+	for_each_cpu_and(cpu, effective, cpu_online_mask) {
+		if (cpu != off_cpu)
+			nr_cpus++;
+	}
+
+	return nr_cpus;
+}
+
+static int pwq_unbound_online_cpus(struct pool_workqueue *pwq, int off_cpu)
+{
+	struct workqueue_struct *wq = pwq->wq;
+	const cpumask_t *effective = unbound_effective_cpumask(wq);
+	int node, cpu, nr_cpus = 0;
+
+	lockdep_assert_held(&wq->mutex);
+
+	for_each_node(node) {
+		if (unbound_pwq_by_node(wq, node) != pwq)
+			continue;
+
+		for_each_cpu_and(cpu, cpumask_of_node(node), cpu_online_mask) {
+			if (cpu != off_cpu && cpumask_test_cpu(cpu, effective))
+				nr_cpus++;
+		}
+	}
+
+	return nr_cpus;
+}
+
+static int wq_calc_max_active(struct pool_workqueue *pwq, int off_cpu)
+{
+	struct workqueue_struct *wq = pwq->wq;
+	int max_active = wq->saved_max_active;
+	int min_active = wq->saved_min_active;
+	int total_cpus, pwq_cpus;
+
+	lockdep_assert_held(&wq->mutex);
+
+	if (!(wq->flags & WQ_UNBOUND))
+		return max_active;
+
+	if (!wq_numa_enabled || wq->unbound_attrs->no_numa)
+		return max_active;
+
+	total_cpus = wq_unbound_online_cpus(wq, off_cpu);
+	if (!total_cpus)
+		return max_active;
+
+	pwq_cpus = pwq_unbound_online_cpus(pwq, off_cpu);
+	return clamp(DIV_ROUND_UP(max_active * pwq_cpus, total_cpus),
+		     min_active, max_active);
 }
 
 static unsigned int work_color_to_flags(int color)
@@ -1137,7 +1204,7 @@ static void put_pwq_unlocked(struct pool_workqueue *pwq)
 	}
 }
 
-static void pwq_activate_delayed_work(struct work_struct *work)
+static void pwq_activate_inactive_work(struct work_struct *work)
 {
 	struct pool_workqueue *pwq = get_work_pwq(work);
 
@@ -1145,16 +1212,16 @@ static void pwq_activate_delayed_work(struct work_struct *work)
 	if (list_empty(&pwq->pool->worklist))
 		pwq->pool->watchdog_ts = jiffies;
 	move_linked_works(work, &pwq->pool->worklist, NULL);
-	__clear_bit(WORK_STRUCT_DELAYED_BIT, work_data_bits(work));
+	__clear_bit(WORK_STRUCT_INACTIVE_BIT, work_data_bits(work));
 	pwq->nr_active++;
 }
 
-static void pwq_activate_first_delayed(struct pool_workqueue *pwq)
+static void pwq_activate_first_inactive(struct pool_workqueue *pwq)
 {
-	struct work_struct *work = list_first_entry(&pwq->delayed_works,
+	struct work_struct *work = list_first_entry(&pwq->inactive_works,
 						    struct work_struct, entry);
 
-	pwq_activate_delayed_work(work);
+	pwq_activate_inactive_work(work);
 }
 
 /**
@@ -1177,10 +1244,10 @@ static void pwq_dec_nr_in_flight(struct pool_workqueue *pwq, int color)
 	pwq->nr_in_flight[color]--;
 
 	pwq->nr_active--;
-	if (!list_empty(&pwq->delayed_works)) {
-		/* one down, submit a delayed one */
+	if (!list_empty(&pwq->inactive_works)) {
+		/* one down, submit an inactive one */
 		if (pwq->nr_active < pwq->max_active)
-			pwq_activate_first_delayed(pwq);
+			pwq_activate_first_inactive(pwq);
 	}
 
 	/* is flush in progress and are we at the flushing tip? */
@@ -1278,14 +1345,14 @@ static int try_to_grab_pending(struct work_struct *work, bool is_dwork,
 		debug_work_deactivate(work);
 
 		/*
-		 * A delayed work item cannot be grabbed directly because
+		 * An inactive work item cannot be grabbed directly because
 		 * it might have linked NO_COLOR work items which, if left
-		 * on the delayed_list, will confuse pwq->nr_active
+		 * on the inactive list, will confuse pwq->nr_active
 		 * management later on and cause stall.  Make sure the work
 		 * item is activated before grabbing.
 		 */
-		if (*work_data_bits(work) & WORK_STRUCT_DELAYED)
-			pwq_activate_delayed_work(work);
+		if (*work_data_bits(work) & WORK_STRUCT_INACTIVE)
+			pwq_activate_inactive_work(work);
 
 		list_del_init(&work->entry);
 		pwq_dec_nr_in_flight(pwq, get_work_color(work));
@@ -1489,8 +1556,8 @@ retry:
 		if (list_empty(worklist))
 			pwq->pool->watchdog_ts = jiffies;
 	} else {
-		work_flags |= WORK_STRUCT_DELAYED;
-		worklist = &pwq->delayed_works;
+		work_flags |= WORK_STRUCT_INACTIVE;
+		worklist = &pwq->inactive_works;
 	}
 
 	debug_work_activate(work);
@@ -2397,7 +2464,7 @@ repeat:
 			/*
 			 * The above execution of rescued work items could
 			 * have created more to rescue through
-			 * pwq_activate_first_delayed() or chained
+			 * pwq_activate_first_inactive() or chained
 			 * queueing.  Let's put @pwq back on mayday list so
 			 * that such back-to-back work items, which may be
 			 * being used to relieve memory pressure, don't
@@ -2831,7 +2898,7 @@ reflush:
 		bool drained;
 
 		spin_lock_irq(&pwq->pool->lock);
-		drained = !pwq->nr_active && list_empty(&pwq->delayed_works);
+		drained = !pwq->nr_active && list_empty(&pwq->inactive_works);
 		spin_unlock_irq(&pwq->pool->lock);
 
 		if (drained)
@@ -3511,39 +3578,24 @@ static void pwq_unbound_release_workfn(struct work_struct *work)
  * pwq_adjust_max_active - update a pwq's max_active to the current setting
  * @pwq: target pool_workqueue
  *
- * If @pwq isn't freezing, set @pwq->max_active to the associated
- * workqueue's saved_max_active and activate delayed work items
- * accordingly.  If @pwq is freezing, clear @pwq->max_active to zero.
+ * Set @pwq->max_active to the supplied value and activate inactive work items
+ * accordingly.
  */
-static void pwq_adjust_max_active(struct pool_workqueue *pwq)
+static void pwq_adjust_max_active(struct pool_workqueue *pwq, int max_active)
 {
-	struct workqueue_struct *wq = pwq->wq;
-	bool freezable = wq->flags & WQ_FREEZABLE;
 	unsigned long flags;
-
-	/* for @wq->saved_max_active */
-	lockdep_assert_held(&wq->mutex);
-
-	/* fast exit for non-freezable wqs */
-	if (!freezable && pwq->max_active == wq->saved_max_active)
-		return;
 
 	/* this function can be called during early boot w/ irq disabled */
 	spin_lock_irqsave(&pwq->pool->lock, flags);
 
-	/*
-	 * During [un]freezing, the caller is responsible for ensuring that
-	 * this function is called at least once after @workqueue_freezing
-	 * is updated and visible.
-	 */
-	if (!freezable || !workqueue_freezing) {
+	if (pwq->max_active != max_active) {
 		bool kick = false;
 
-		pwq->max_active = wq->saved_max_active;
+		pwq->max_active = max_active;
 
-		while (!list_empty(&pwq->delayed_works) &&
+		while (!list_empty(&pwq->inactive_works) &&
 		       pwq->nr_active < pwq->max_active) {
-			pwq_activate_first_delayed(pwq);
+			pwq_activate_first_inactive(pwq);
 			kick = true;
 		}
 
@@ -3555,11 +3607,26 @@ static void pwq_adjust_max_active(struct pool_workqueue *pwq)
 		 */
 		if (kick)
 			wake_up_worker(pwq->pool);
-	} else {
-		pwq->max_active = 0;
 	}
 
 	spin_unlock_irqrestore(&pwq->pool->lock, flags);
+}
+
+static void wq_adjust_max_active(struct workqueue_struct *wq, int off_cpu)
+{
+	struct pool_workqueue *pwq;
+	int max_active;
+
+	lockdep_assert_held(&wq->mutex);
+
+	for_each_pwq(pwq, wq) {
+		if ((wq->flags & WQ_FREEZABLE) && workqueue_freezing)
+			max_active = 0;
+		else
+			max_active = wq_calc_max_active(pwq, off_cpu);
+
+		pwq_adjust_max_active(pwq, max_active);
+	}
 }
 
 /* initialize newly alloced @pwq which is associated with @wq and @pool */
@@ -3574,7 +3641,7 @@ static void init_pwq(struct pool_workqueue *pwq, struct workqueue_struct *wq,
 	pwq->wq = wq;
 	pwq->flush_color = -1;
 	pwq->refcnt = 1;
-	INIT_LIST_HEAD(&pwq->delayed_works);
+	INIT_LIST_HEAD(&pwq->inactive_works);
 	INIT_LIST_HEAD(&pwq->pwqs_node);
 	INIT_LIST_HEAD(&pwq->mayday_node);
 	INIT_WORK(&pwq->unbound_release_work, pwq_unbound_release_workfn);
@@ -3593,9 +3660,6 @@ static void link_pwq(struct pool_workqueue *pwq)
 
 	/* set the matching work_color */
 	pwq->work_color = wq->work_color;
-
-	/* sync max_active to the current setting */
-	pwq_adjust_max_active(pwq);
 
 	/* link in @pwq */
 	list_add_rcu(&pwq->pwqs_node, &wq->pwqs);
@@ -3809,6 +3873,7 @@ static void apply_wqattrs_commit(struct apply_wqattrs_ctx *ctx)
 	/* @dfl_pwq might not have been used, ensure it's linked */
 	link_pwq(ctx->dfl_pwq);
 	swap(ctx->wq->dfl_pwq, ctx->dfl_pwq);
+	wq_adjust_max_active(ctx->wq, -1);
 
 	mutex_unlock(&ctx->wq->mutex);
 }
@@ -3938,7 +4003,7 @@ static void wq_update_unbound_numa(struct workqueue_struct *wq, int cpu,
 	 */
 	if (wq_calc_node_cpumask(wq->dfl_pwq->pool->attrs, node, cpu_off, cpumask)) {
 		if (cpumask_equal(cpumask, pwq->pool->attrs->cpumask))
-			return;
+			goto out_adjust;
 	} else {
 		goto use_dfl_pwq;
 	}
@@ -3963,8 +4028,14 @@ use_dfl_pwq:
 	spin_unlock_irq(&wq->dfl_pwq->pool->lock);
 	old_pwq = numa_pwq_tbl_install(wq, node, wq->dfl_pwq);
 out_unlock:
+	wq_adjust_max_active(wq, cpu_off);
 	mutex_unlock(&wq->mutex);
 	put_pwq_unlocked(old_pwq);
+	return;
+out_adjust:
+	mutex_lock(&wq->mutex);
+	wq_adjust_max_active(wq, cpu_off);
+	mutex_unlock(&wq->mutex);
 }
 
 static int alloc_and_link_pwqs(struct workqueue_struct *wq)
@@ -4054,14 +4125,11 @@ struct workqueue_struct *__alloc_workqueue_key(const char *fmt,
 	size_t tbl_size = 0;
 	va_list args;
 	struct workqueue_struct *wq;
-	struct pool_workqueue *pwq;
 
 	/*
 	 * Unbound && max_active == 1 used to imply ordered, which is no
-	 * longer the case on NUMA machines due to per-node pools.  While
-	 * alloc_ordered_workqueue() is the right way to create an ordered
-	 * workqueue, keep the previous behavior to avoid subtle breakages
-	 * on NUMA.
+	 * longer the case on newer upstream topologies.  Preserve the local
+	 * 4.14 semantics until all callers are audited and converted.
 	 */
 	if ((flags & WQ_UNBOUND) && max_active == 1)
 		flags |= __WQ_ORDERED;
@@ -4094,6 +4162,7 @@ struct workqueue_struct *__alloc_workqueue_key(const char *fmt,
 	/* init wq */
 	wq->flags = flags;
 	wq->saved_max_active = max_active;
+	wq->saved_min_active = min(max_active, WQ_DFL_MIN_ACTIVE);
 	mutex_init(&wq->mutex);
 	atomic_set(&wq->nr_pwqs_to_flush, 0);
 	INIT_LIST_HEAD(&wq->pwqs);
@@ -4121,8 +4190,7 @@ struct workqueue_struct *__alloc_workqueue_key(const char *fmt,
 	mutex_lock(&wq_pool_mutex);
 
 	mutex_lock(&wq->mutex);
-	for_each_pwq(pwq, wq)
-		pwq_adjust_max_active(pwq);
+	wq_adjust_max_active(wq, -1);
 	mutex_unlock(&wq->mutex);
 
 	list_add_tail_rcu(&wq->list, &workqueues);
@@ -4190,7 +4258,7 @@ void destroy_workqueue(struct workqueue_struct *wq)
 
 		if (WARN_ON((pwq != wq->dfl_pwq) && (pwq->refcnt > 1)) ||
 		    WARN_ON(pwq->nr_active) ||
-		    WARN_ON(!list_empty(&pwq->delayed_works))) {
+		    WARN_ON(!list_empty(&pwq->inactive_works))) {
 			mutex_unlock(&wq->mutex);
 			show_workqueue_state();
 			return;
@@ -4247,8 +4315,6 @@ EXPORT_SYMBOL_GPL(destroy_workqueue);
  */
 void workqueue_set_max_active(struct workqueue_struct *wq, int max_active)
 {
-	struct pool_workqueue *pwq;
-
 	/* disallow meddling with max_active for ordered workqueues */
 	if (WARN_ON(wq->flags & __WQ_ORDERED_EXPLICIT))
 		return;
@@ -4259,9 +4325,10 @@ void workqueue_set_max_active(struct workqueue_struct *wq, int max_active)
 
 	wq->flags &= ~__WQ_ORDERED;
 	wq->saved_max_active = max_active;
+	if (wq->flags & WQ_UNBOUND)
+		wq->saved_min_active = min(max_active, WQ_DFL_MIN_ACTIVE);
 
-	for_each_pwq(pwq, wq)
-		pwq_adjust_max_active(pwq);
+	wq_adjust_max_active(wq, -1);
 
 	mutex_unlock(&wq->mutex);
 }
@@ -4331,7 +4398,7 @@ bool workqueue_congested(int cpu, struct workqueue_struct *wq)
 	else
 		pwq = unbound_pwq_by_node(wq, cpu_to_node(cpu));
 
-	ret = !list_empty(&pwq->delayed_works);
+	ret = !list_empty(&pwq->inactive_works);
 	rcu_read_unlock_sched();
 
 	return ret;
@@ -4532,11 +4599,11 @@ static void show_pwq(struct pool_workqueue *pwq)
 		pr_cont("\n");
 	}
 
-	if (!list_empty(&pwq->delayed_works)) {
+	if (!list_empty(&pwq->inactive_works)) {
 		bool comma = false;
 
-		pr_info("    delayed:");
-		list_for_each_entry(work, &pwq->delayed_works, entry) {
+		pr_info("    inactive:");
+		list_for_each_entry(work, &pwq->inactive_works, entry) {
 			pr_cont_work(comma, work);
 			comma = !(*work_data_bits(work) & WORK_STRUCT_LINKED);
 		}
@@ -4566,7 +4633,7 @@ void show_workqueue_state(void)
 		bool idle = true;
 
 		for_each_pwq(pwq, wq) {
-			if (pwq->nr_active || !list_empty(&pwq->delayed_works)) {
+			if (pwq->nr_active || !list_empty(&pwq->inactive_works)) {
 				idle = false;
 				break;
 			}
@@ -4578,7 +4645,7 @@ void show_workqueue_state(void)
 
 		for_each_pwq(pwq, wq) {
 			spin_lock_irqsave(&pwq->pool->lock, flags);
-			if (pwq->nr_active || !list_empty(&pwq->delayed_works))
+			if (pwq->nr_active || !list_empty(&pwq->inactive_works))
 				show_pwq(pwq);
 			spin_unlock_irqrestore(&pwq->pool->lock, flags);
 			/*
@@ -4924,7 +4991,7 @@ EXPORT_SYMBOL_GPL(work_on_cpu_safe);
  * freeze_workqueues_begin - begin freezing workqueues
  *
  * Start freezing workqueues.  After this function returns, all freezable
- * workqueues will queue new works to their delayed_works list instead of
+ * workqueues will queue new works to their inactive_works list instead of
  * pool->worklist.
  *
  * CONTEXT:
@@ -4933,7 +5000,6 @@ EXPORT_SYMBOL_GPL(work_on_cpu_safe);
 void freeze_workqueues_begin(void)
 {
 	struct workqueue_struct *wq;
-	struct pool_workqueue *pwq;
 
 	mutex_lock(&wq_pool_mutex);
 
@@ -4942,8 +5008,7 @@ void freeze_workqueues_begin(void)
 
 	list_for_each_entry(wq, &workqueues, list) {
 		mutex_lock(&wq->mutex);
-		for_each_pwq(pwq, wq)
-			pwq_adjust_max_active(pwq);
+		wq_adjust_max_active(wq, -1);
 		mutex_unlock(&wq->mutex);
 	}
 
@@ -5008,7 +5073,6 @@ out_unlock:
 void thaw_workqueues(void)
 {
 	struct workqueue_struct *wq;
-	struct pool_workqueue *pwq;
 
 	mutex_lock(&wq_pool_mutex);
 
@@ -5020,8 +5084,7 @@ void thaw_workqueues(void)
 	/* restore max_active and repopulate worklist */
 	list_for_each_entry(wq, &workqueues, list) {
 		mutex_lock(&wq->mutex);
-		for_each_pwq(pwq, wq)
-			pwq_adjust_max_active(pwq);
+		wq_adjust_max_active(wq, -1);
 		mutex_unlock(&wq->mutex);
 	}
 
