@@ -1239,14 +1239,12 @@ static void free_pcppages_bulk(struct zone *zone, int count,
 
 static void free_one_page(struct zone *zone,
 				struct page *page, unsigned long pfn,
-				unsigned int order,
-				int migratetype)
+				unsigned int order)
 {
+	int migratetype;
+
 	spin_lock(&zone->lock);
-	if (unlikely(has_isolate_pageblock(zone) ||
-		is_migrate_isolate(migratetype))) {
-		migratetype = get_pfnblock_migratetype(page, pfn);
-	}
+	migratetype = get_pfnblock_migratetype(page, pfn);
 	__free_one_page(page, pfn, zone, order, migratetype);
 	spin_unlock(&zone->lock);
 }
@@ -1328,16 +1326,14 @@ void __meminit reserve_bootmem_region(phys_addr_t start, phys_addr_t end)
 static void __free_pages_ok(struct page *page, unsigned int order)
 {
 	unsigned long flags;
-	int migratetype;
 	unsigned long pfn = page_to_pfn(page);
 
 	if (!free_pages_prepare(page, order, true))
 		return;
 
-	migratetype = get_pfnblock_migratetype(page, pfn);
 	local_irq_save(flags);
 	__count_vm_events(PGFREE, 1 << order);
-	free_one_page(page_zone(page), page, pfn, order, migratetype);
+	free_one_page(page_zone(page), page, pfn, order);
 	local_irq_restore(flags);
 }
 
@@ -2745,7 +2741,7 @@ void free_hot_cold_page(struct page *page, bool cold)
 	 */
 	if (migratetype >= MIGRATE_PCPTYPES) {
 		if (unlikely(is_migrate_isolate(migratetype))) {
-			free_one_page(zone, page, pfn, 0, migratetype);
+			free_one_page(zone, page, pfn, 0);
 			goto out;
 		}
 		migratetype = MIGRATE_MOVABLE;
