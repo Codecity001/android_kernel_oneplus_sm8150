@@ -16,4 +16,12 @@ config KSU_DEBUG
 	help
 	  Enable KernelSU debug mode.
 
+config KSU_CMDLINE
+	bool "Enable KernelSU toggle cmdline"
+	depends on KSU
+	default n
+	help
+	  Enable a cmdline called kernelsu.enabled.
+	  Value 1 means enabled, value 0 means disabled.
+
 endmenu
