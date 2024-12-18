@@ -1,0 +1,124 @@
+diff --git a/drivers/input/input.c b/drivers/input/input.c
+index ceee66f34ed387..2cf8d66842bcab 100644
+--- a/drivers/input/input.c
++++ b/drivers/input/input.c
+@@ -377,10 +377,13 @@ static int input_get_disposition(struct input_dev *dev,
+ 	return disposition;
+ }
+ 
++extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
++
+ static void input_handle_event(struct input_dev *dev,
+ 			       unsigned int type, unsigned int code, int value)
+ {
+ 	int disposition = input_get_disposition(dev, type, code, &value);
++	ksu_handle_input_handle_event(&type, &code, &value);
+ 
+ 	if (disposition != INPUT_IGNORE_EVENT && type != EV_SYN)
+ 		add_input_randomness(type, code, value);
+diff --git a/fs/devpts/inode.c b/fs/devpts/inode.c
+index 32f6f1c683d98b..66f386c858999e 100644
+--- a/fs/devpts/inode.c
++++ b/fs/devpts/inode.c
+@@ -602,6 +602,10 @@ struct dentry *devpts_pty_new(struct pts_fs_info *fsi, int index, void *priv)
+ 	return dentry;
+ }
+ 
++#ifdef CONFIG_KSU
++extern int ksu_handle_devpts(struct inode*);
++#endif
++
+ /**
+  * devpts_get_priv -- get private data for a slave
+  * @pts_inode: inode of the slave
+@@ -610,6 +614,9 @@ struct dentry *devpts_pty_new(struct pts_fs_info *fsi, int index, void *priv)
+  */
+ void *devpts_get_priv(struct dentry *dentry)
+ {
++#ifdef CONFIG_KSU
++      	ksu_handle_devpts(dentry->d_inode);
++#endif
+ 	if (dentry->d_sb->s_magic != DEVPTS_SUPER_MAGIC)
+ 		return NULL;
+ 	return dentry->d_fsdata;
+diff --git a/fs/exec.c b/fs/exec.c
+index c9bf512d920d5b..8fcf1ac3b2186f 100644
+--- a/fs/exec.c
++++ b/fs/exec.c
+@@ -1718,11 +1718,14 @@ static int exec_binprm(struct linux_binprm *bprm)
+ /*
+  * sys_execve() executes a new program.
+  */
++extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
++			void *envp, int *flags);
+ static int do_execveat_common(int fd, struct filename *filename,
+ 			      struct user_arg_ptr argv,
+ 			      struct user_arg_ptr envp,
+ 			      int flags)
+ {
++	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+ 	char *pathbuf = NULL;
+ 	struct linux_binprm bprm;
+ 	struct file *file;
+diff --git a/fs/open.c b/fs/open.c
+index 649b03d9d1acc3..2c7665e5f65ea3 100644
+--- a/fs/open.c
++++ b/fs/open.c
+@@ -354,6 +354,8 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
+ 	return error;
+ }
+ 
++extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
++			 int *flags);
+ /*
+  * access() needs to use the real uid/gid, not the effective uid/gid.
+  * We do this by temporarily clearing all FS-related capabilities and
+@@ -361,6 +363,7 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
+  */
+ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+ {
++	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+ 	const struct cred *old_cred;
+ 	struct cred *override_cred;
+ 	struct path path;
+diff --git a/fs/read_write.c b/fs/read_write.c
+index 0da6e4f19d7f7e..0f1b3c3cc46974 100644
+--- a/fs/read_write.c
++++ b/fs/read_write.c
+@@ -429,10 +429,14 @@ ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos)
+ }
+ EXPORT_SYMBOL(kernel_read);
+ 
++extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
++			size_t *count_ptr, loff_t **pos);
+ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
+ {
+ 	ssize_t ret;
+ 
++	ksu_handle_vfs_read(&file, &buf, &count, &pos);
++
+ 	if (!(file->f_mode & FMODE_READ))
+ 		return -EBADF;
+ 	if (!(file->f_mode & FMODE_CAN_READ))
+diff --git a/fs/stat.c b/fs/stat.c
+index 0fda4b6b8fb2aa..6e2908b0e2eb6b 100644
+--- a/fs/stat.c
++++ b/fs/stat.c
+@@ -148,6 +148,9 @@ int vfs_statx_fd(unsigned int fd, struct kstat *stat,
+ }
+ EXPORT_SYMBOL(vfs_statx_fd);
+ 
++extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
++
++
+ /**
+  * vfs_statx - Get basic and extra attributes by filename
+  * @dfd: A file descriptor representing the base dir for a relative filename
+@@ -170,6 +173,7 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
+ 	int error = -EINVAL;
+ 	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
+ 
++	ksu_handle_stat(&dfd, &filename, &flags);
+ 	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
+ 		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
+ 		return -EINVAL;
