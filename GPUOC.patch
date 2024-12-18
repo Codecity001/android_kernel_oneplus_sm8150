@@ -1,0 +1,109 @@
+commit 372fcdf2c6bba564b2e9ff6fa0a8780cb4d8656e
+Author: John Galt <johngaltfirstrun@gmail.com>
+Date:   Mon Aug 7 13:10:00 2023 -0400
+
+    [DNM] personal: GPU OC
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8150-gpu-v2.dtsi b/arch/arm64/boot/dts/qcom/sm8150-gpu-v2.dtsi
+index 5fcfa3333b7ce3..c31615e25a0874 100644
+--- a/arch/arm64/boot/dts/qcom/sm8150-gpu-v2.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm8150-gpu-v2.dtsi
+@@ -14,6 +14,11 @@
+ 	gpu_opp_table_v2: gpu_opp_table_v2 {
+ 		compatible = "operating-points-v2";
+ 
++		opp-835000000 {
++			opp-hz = /bits/ 64 <835000000>;
++			opp-microvolt = <RPMH_REGULATOR_LEVEL_TURBO_L1>;
++		};
++
+ 		opp-757000000 {
+ 			opp-hz = /bits/ 64 <757000000>;
+ 			opp-microvolt = <RPMH_REGULATOR_LEVEL_NOM_L2>;
+diff --git a/arch/arm64/boot/dts/qcom/sm8150-v2.dtsi b/arch/arm64/boot/dts/qcom/sm8150-v2.dtsi
+index c90a41b3d0ef12..72a0dd2de6a1a4 100644
+--- a/arch/arm64/boot/dts/qcom/sm8150-v2.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm8150-v2.dtsi
+@@ -696,7 +696,7 @@
+ 
+ 			qcom,gpu-pwrlevel@0 {
+ 				reg = <0>;
+-				qcom,gpu-freq = <757000000>;
++				qcom,gpu-freq = <835000000>;
+ 				qcom,bus-freq = <11>;
+ 				qcom,bus-min = <11>;
+ 				qcom,bus-max = <11>;
+@@ -704,7 +704,7 @@
+ 
+ 			qcom,gpu-pwrlevel@1 {
+ 				reg = <1>;
+-				qcom,gpu-freq = <675000000>;
++				qcom,gpu-freq = <757000000>;
+ 				qcom,bus-freq = <11>;
+ 				qcom,bus-min = <11>;
+ 				qcom,bus-max = <11>;
+@@ -712,46 +712,54 @@
+ 
+ 			qcom,gpu-pwrlevel@2 {
+ 				reg = <2>;
++				qcom,gpu-freq = <675000000>;
++				qcom,bus-freq = <11>;
++				qcom,bus-min = <11>;
++				qcom,bus-max = <11>;
++			};
++
++			qcom,gpu-pwrlevel@3 {
++				reg = <3>;
+ 				qcom,gpu-freq = <585000000>;
+ 				qcom,bus-freq = <10>;
+ 				qcom,bus-min = <9>;
+ 				qcom,bus-max = <11>;
+ 			};
+ 
+-			qcom,gpu-pwrlevel@3 {
+-				reg = <3>;
++			qcom,gpu-pwrlevel@4 {
++				reg = <4>;
+ 				qcom,gpu-freq = <499200000>;
+ 				qcom,bus-freq = <9>;
+ 				qcom,bus-min = <8>;
+ 				qcom,bus-max = <11>;
+ 			};
+ 
+-			qcom,gpu-pwrlevel@4 {
+-				reg = <4>;
++			qcom,gpu-pwrlevel@5 {
++				reg = <5>;
+ 				qcom,gpu-freq = <427000000>;
+ 				qcom,bus-freq = <6>;
+ 				qcom,bus-min = <5>;
+ 				qcom,bus-max = <9>;
+ 			};
+ 
+-			qcom,gpu-pwrlevel@5 {
+-				reg = <5>;
++			qcom,gpu-pwrlevel@6 {
++				reg = <6>;
+ 				qcom,gpu-freq = <345000000>;
+ 				qcom,bus-freq = <3>;
+ 				qcom,bus-min = <3>;
+ 				qcom,bus-max = <5>;
+ 			};
+ 
+-			qcom,gpu-pwrlevel@6 {
+-				reg = <6>;
++			qcom,gpu-pwrlevel@7 {
++				reg = <7>;
+ 				qcom,gpu-freq = <257000000>;
+ 				qcom,bus-freq = <3>;
+ 				qcom,bus-min = <2>;
+ 				qcom,bus-max = <4>;
+ 			};
+ 
+-			qcom,gpu-pwrlevel@7 {
+-				reg = <7>;
++			qcom,gpu-pwrlevel@8 {
++				reg = <8>;
+ 				qcom,gpu-freq = <0>;
+ 				qcom,bus-freq = <0>;
+ 				qcom,bus-min = <0>;
