@@ -64,7 +64,6 @@ int __init kernelsu_init(void)
 		return 0;
 	}
 #endif
-
 #ifdef CONFIG_KSU_DEBUG
 	pr_alert("*************************************************************");
 	pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
@@ -86,8 +85,6 @@ int __init kernelsu_init(void)
 #ifdef CONFIG_KPROBES
 	ksu_sucompat_init();
 	ksu_ksud_init();
-#else
-	pr_alert("KPROBES is disabled, KernelSU may not work, please check https://kernelsu.org/guide/how-to-integrate-for-non-gki.html");
 #endif
 
 #ifdef MODULE
@@ -104,7 +101,6 @@ void kernelsu_exit(void)
 	if (enable_kernelsu < 1)
 		return;
 #endif
-
 	ksu_allowlist_exit();
 
 	ksu_throne_tracker_exit();
