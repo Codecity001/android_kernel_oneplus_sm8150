@@ -2,6 +2,9 @@
 #include "objsec.h"
 #include "linux/version.h"
 #include "../klog.h" // IWYU pragma: keep
+#ifdef SAMSUNG_SELINUX_PORTING
+#include "security.h" // Samsung SELinux Porting
+#endif
 #ifndef KSU_COMPAT_USE_SELINUX_STATE
 #include "avc.h"
 #endif
@@ -51,18 +54,14 @@ void ksu_setup_selinux(const char *domain)
 		pr_err("transive domain failed.\n");
 		return;
 	}
-
-	/* we didn't need this now, we have change selinux rules when boot!
-if (!is_domain_permissive) {
-  if (set_domain_permissive() == 0) {
-      is_domain_permissive = true;
-  }
-}*/
 }
 
 void ksu_setenforce(bool enforce)
 {
 #ifdef CONFIG_SECURITY_SELINUX_DEVELOP
+#ifdef SAMSUNG_SELINUX_PORTING
+	selinux_enforcing = enforce;
+#endif
 #ifdef KSU_COMPAT_USE_SELINUX_STATE
 	selinux_state.enforcing = enforce;
 #else
@@ -84,6 +83,9 @@ bool ksu_getenforce()
 #endif
 
 #ifdef CONFIG_SECURITY_SELINUX_DEVELOP
+#ifdef SAMSUNG_SELINUX_PORTING
+	return selinux_enforcing;
+#endif
 #ifdef KSU_COMPAT_USE_SELINUX_STATE
 	return selinux_state.enforcing;
 #else

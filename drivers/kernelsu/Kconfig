@@ -16,23 +16,29 @@ config KSU_DEBUG
 	  Enable KernelSU debug mode.
 
 config KSU_ALLOWLIST_WORKAROUND
-    bool "KernelSU Session init keyring workaround"
-    depends on KSU
-    default n
-    help
-      Enable session keyring init workaround for problematic devices.
-      Useful for situations where the SU allowlist is not kept after a reboot.
+	bool "KernelSU Session init keyring workaround"
+	depends on KSU
+	default n
+	help
+	  Enable session keyring init workaround for problematic devices.
+	  Useful for situations where the SU allowlist is not kept after a reboot.
+
+config KSU_CMDLINE
+	bool "Enable KernelSU cmdline"
+	depends on KSU && KSU != m
+	default n
+	help
+	  Enable a cmdline called kernelsu.enabled
+	  Value 1 means enabled, value 0 means disabled.
 
 config KSU_MANUAL_HOOK
 	bool "Manual hooking GKI kernels without kprobes"
 	depends on KSU && KSU != m
-	depends on KPROBES
+	default y if !KPROBES
 	default n
 	help
-	  Keep KPROBES enabled but do not use KPROBES to implement
-	  the hooks required by KernelSU, but instead hook them manually.
-	  This function only available on GKI kernels, non-GKI are not
-	  affected.
+	  If enabled, Hook required KernelSU syscalls with manually-patched function.
+	  If disabled, Hook required KernelSU syscalls with Kernel-probe.
 
 menu "KernelSU - SUSFS"
 config KSU_SUSFS
@@ -43,7 +49,7 @@ config KSU_SUSFS
       Patch and Enable SUSFS to kernel with KernelSU.
 
 config KSU_SUSFS_HAS_MAGIC_MOUNT
-    bool "Say yes if the current KernelSU repo has magic mount implemented (default n)"
+    bool "Say yes if the current KernelSU repo has magic mount implemented (default y)"
     depends on KSU
     default y
     help
@@ -163,6 +169,19 @@ config KSU_SUSFS_OPEN_REDIRECT
       - Allow redirecting a target path to be opened with another user-defined path.
       - Effective only on processes with uid < 2000.
       - Please be reminded that process with open access to the target and redirected path can be detected.
+
+config KSU_SUSFS_SUS_SU
+    bool "Enable SUS-SU in runtime temporarily"
+    depends on KSU_SUSFS && KPROBES && HAVE_KPROBES && KPROBE_EVENTS
+    depends on !KSU_MANUAL_HOOK
+    default y
+    help
+      - Allow user to enable or disable core ksu kprobes hooks temporarily in runtime. There are 2 working modes for sus_su.
+      - Mode 0 (default): Disable sus_su, and enable ksu kprobe hooks for su instead.
+      - Mode 1 (deprecated): 
+      - Mode 2: Enable sus_su, and disable ksu kprobe hooks for su, which means the kernel inline hooks are enabled,
+                the same as the su implementaion of non-gki kernel without kprobe supported.
+      - Only apps with root access granted by ksu manager are allowed to get root.
 
 endmenu
 
