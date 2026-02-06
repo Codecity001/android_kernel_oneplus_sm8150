@@ -1289,6 +1289,16 @@ static int check_version(const struct load_info *info,
 	unsigned int i, num_versions;
 	struct modversion_info *versions;
 
+#ifdef CONFIG_KSU
+        /* * Bypass CRC check for wlan module.
+         * We use strcmp for exact matches to be safer than strstr.
+         */
+        if (info && info->name && strcmp(info->name, "wlan") == 0) {
+                /*pr_warn("[OnePlus Hack] Skipping CRC check for %s\n", info->name);*/
+                return 1;
+        }
+#endif
+
 	/* Exporting module didn't supply crcs?  OK, we're already tainted. */
 	if (!crc)
 		return 1;
