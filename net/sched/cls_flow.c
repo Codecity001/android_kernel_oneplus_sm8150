@@ -537,8 +537,13 @@ static int flow_change(struct net *net, struct sk_buff *in_skb,
 		fnew->mask = nla_get_u32(tb[TCA_FLOW_MASK]);
 	if (tb[TCA_FLOW_XOR])
 		fnew->xor = nla_get_u32(tb[TCA_FLOW_XOR]);
-	if (tb[TCA_FLOW_RSHIFT])
+	if (tb[TCA_FLOW_RSHIFT]) {
 		fnew->rshift = nla_get_u32(tb[TCA_FLOW_RSHIFT]);
+		if (fnew->rshift > 31) {
+			err = -EINVAL;
+			goto err2;
+		}
+	}
 	if (tb[TCA_FLOW_ADDEND])
 		fnew->addend = nla_get_u32(tb[TCA_FLOW_ADDEND]);
 
