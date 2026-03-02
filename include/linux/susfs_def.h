@@ -55,6 +55,7 @@
  */
  // thread_info->flags is unsigned long :D
 #define TIF_PROC_UMOUNTED 33
+#define TIF_PROC_SU_NOT_ALLOWED 34
 
 #define AS_FLAGS_SUS_PATH 24
 #define AS_FLAGS_SUS_MOUNT 25
@@ -88,5 +89,13 @@ static inline bool susfs_is_current_proc_umounted(void) {
 
 static inline void susfs_set_current_proc_umounted(void) {
 	set_ti_thread_flag(&current->thread_info, TIF_PROC_UMOUNTED);
+}
+
+static inline bool susfs_is_current_proc_su_not_allowed(void) {
+	return test_ti_thread_flag(&current->thread_info, TIF_PROC_SU_NOT_ALLOWED);
+}
+
+static inline void susfs_set_current_proc_su_not_allowed(void) {
+	set_ti_thread_flag(&current->thread_info, TIF_PROC_SU_NOT_ALLOWED);
 }
 #endif // #ifndef KSU_SUSFS_DEF_H
