@@ -391,13 +391,6 @@ void oplus_gauge_set_float_uv_ma(int iterm_ma,int float_volt_uv)
        }
 }
 
-int oplus_gauge_set_lcd_off_status(int lcd_off)
-{
-	if (g_gauge_chip && g_gauge_chip->gauge_ops->set_lcd_off_status)
-		return g_gauge_chip->gauge_ops->set_lcd_off_status(lcd_off);
-	return 0;
-}
-
 void oplus_gauge_set_batt_full(bool full)
 {
 	if (g_gauge_chip) {
