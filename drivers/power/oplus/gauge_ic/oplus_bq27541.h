@@ -428,6 +428,14 @@ struct chip_bq27541 {
 
 	bool modify_soc_smooth;
 	bool modify_soc_calibration;
+
+	/* LCD-off SOC smoothing (from OOS 11.0.9.1 binary decompilation) */
+	bool smooth_flag;           /* gauge-level smoothing active */
+	bool lcd_is_off;            /* temp flag during lcd_off SOC snapshot */
+	struct delayed_work lcd_off_work; /* work for LCD-off snapshot */
+	struct mutex soc_lock;      /* protects soc_pre, smooth_flag, lcd_is_off */
+	int lcd_off_delt_soc;       /* expected SOC delta at LCD off */
+	struct wakeup_source *soc_smooth_ws;
 	
 	bool battery_full_param;//only for wite battery full param in guage dirver probe on 7250 platform
 	int sha1_key_index;
