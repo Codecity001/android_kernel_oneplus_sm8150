@@ -356,6 +356,7 @@ static void kgsl_destroy_ion(struct kgsl_memdesc *memdesc)
 		dma_buf_detach(meta->dmabuf, meta->attach);
 		dma_buf_put(meta->dmabuf);
 		kfree(meta);
+		entry->priv_data = NULL;
 	}
 
 	/*
