@@ -82,6 +82,7 @@ struct oplus_gauge_operations {
 	void (*set_float_uv_ma)(int, int);
 	int (*protect_check) (void);
 	bool (*afi_update_done) (void);
+	int (*set_lcd_off_status) (int lcd_off);
 };
 
 /****************************************
@@ -152,6 +153,7 @@ int oplus_gauge_get_battery_cb_status(void);
 int oplus_gauge_get_i2c_err(void);
 void oplus_gauge_clear_i2c_err(void);
 void oplus_gauge_set_float_uv_ma(int iterm_ma,int float_volt_uv);
+int oplus_gauge_set_lcd_off_status(int lcd_off);
 
 #if defined(CONFIG_OPLUS_CHARGER_MTK6763) || defined(CONFIG_OPLUS_CHARGER_MTK6771)
 extern int oplus_fuelgauged_init_flag;
