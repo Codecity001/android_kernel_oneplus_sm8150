@@ -4660,7 +4660,7 @@ static unsigned long _get_svm_area(struct kgsl_process_private *private,
 		unsigned long len, unsigned long flags)
 {
 	uint64_t start, end;
-	int align_shift = kgsl_memdesc_get_align(&entry->memdesc);
+	u32 align_shift = kgsl_memdesc_get_align(&entry->memdesc);
 	uint64_t align;
 	unsigned long result;
 	unsigned long addr;
