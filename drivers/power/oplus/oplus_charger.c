@@ -4685,11 +4685,9 @@ static int fb_notifier_callback(struct notifier_block *nb,
 		if (blank == MSM_DRM_BLANK_UNBLANK) {
 			g_charger_chip->led_on = true;
 			g_charger_chip->led_on_change = true;
-			oplus_gauge_set_lcd_off_status(0);
 		} else if (blank == MSM_DRM_BLANK_POWERDOWN) {
 			g_charger_chip->led_on = false;
 			g_charger_chip->led_on_change = true;
-			oplus_gauge_set_lcd_off_status(1);
 		} else {
 			pr_err("%s: receives wrong data EARLY_BLANK:%d\n", __func__, blank);
 		}
