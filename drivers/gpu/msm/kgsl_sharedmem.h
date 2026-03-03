@@ -106,10 +106,10 @@ kgsl_memdesc_get_align(const struct kgsl_memdesc *memdesc)
  *
  * Returns the pagesize based on memdesc alignment
  */
-static inline int
+static inline unsigned int
 kgsl_memdesc_get_pagesize(const struct kgsl_memdesc *memdesc)
 {
-	return (1 << kgsl_memdesc_get_align(memdesc));
+	return (1U << kgsl_memdesc_get_align(memdesc));
 }
 
 /*
