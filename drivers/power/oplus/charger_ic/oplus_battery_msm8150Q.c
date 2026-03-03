@@ -14958,6 +14958,10 @@ close_time:
 }
 
 static unsigned long suspend_tm_sec = 0;
+
+extern void oplus_chg_cancel_update_work_sync(void);
+extern void oplus_chg_restart_update_work(void);
+
 static int smb5_pm_resume(struct device *dev)
 {
 	int rc = 0;
@@ -14980,6 +14984,7 @@ static int smb5_pm_resume(struct device *dev)
 	}
 
 	oplus_chg_soc_update_when_resume(sleep_time);
+	oplus_chg_restart_update_work();
 
 	return 0;
 }
@@ -14988,6 +14993,10 @@ static int smb5_pm_suspend(struct device *dev)
 {
 	if (!g_oplus_chip)
 		return 0;
+
+	/* Stop polling during suspend to prevent stale gauge reads
+	 * and soc_down_count accumulation with cached data */
+	oplus_chg_cancel_update_work_sync();
 
 	if (get_current_time(&suspend_tm_sec)) {
 		chg_err("RTC read failed\n");
