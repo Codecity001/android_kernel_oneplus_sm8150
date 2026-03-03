@@ -964,6 +964,11 @@ static QDF_STATUS extract_gtk_rsp_event_tlv(wmi_unified_t wmi_handle,
 		return QDF_STATUS_E_INVAL;
 	}
 
+	/*
+	 * Firmware may send a shorter GTK status event if it predates
+	 * the BIGTK extension (WPA3).  We only extract fields up through
+	 * replay_counter, so require just that much data.
+	 */
 	min_len = offsetof(WMI_GTK_OFFLOAD_STATUS_EVENT_fixed_param,
 			   replay_counter) +
 		  sizeof(fixed_param->replay_counter);
@@ -976,6 +981,11 @@ static QDF_STATUS extract_gtk_rsp_event_tlv(wmi_unified_t wmi_handle,
 			 len, tlv_len, min_len);
 		return QDF_STATUS_E_INVAL;
 	}
+
+	if (len < sizeof(WMI_GTK_OFFLOAD_STATUS_EVENT_fixed_param))
+		WMI_LOGD("Legacy GTK status event: len %u < %zu, BIGTK fields absent",
+			 len,
+			 sizeof(WMI_GTK_OFFLOAD_STATUS_EVENT_fixed_param));
 
 	if (fixed_param->vdev_id >= WLAN_UMAC_PSOC_MAX_VDEVS) {
 		wmi_err_rl("Invalid vdev_id %u", fixed_param->vdev_id);
