@@ -861,6 +861,7 @@ static int bq27541_soc_calibrate(int soc)
 		soc_calib = 0;
 	}
 	gauge_ic->soc_pre = soc_calib;
+	gauge_ic->soc_smooth_inited = true;
 	/*pr_info("soc:%d, soc_calib:%d\n", soc, soc_calib); */
 	return soc_calib;
 }
@@ -1701,36 +1702,34 @@ static int bq27541_get_battery_soc(void)
 	}
 
 	/*
-	 * LCD-off SOC smoothing (reverse-engineered from OOS 11.0.9.1 binary).
+	 * Always-on SOC smoothing (reverse-engineered from OOS 11.0.9.1).
 	 *
-	 * When the screen turns off, electrical load drops sharply and the
-	 * fuel gauge quickly updates its SOC estimate, creating a visible
-	 * percentage jump.  OOS 11.0.9.1 counters this by activating gauge-
-	 * level smoothing at LCD-off: soc_pre decrements by at most 1% per
-	 * polling cycle instead of jumping to the real value.
+	 * The BQ27541 Impedance Track algorithm can stall under dynamic
+	 * load, then catch up when load changes (e.g. screen off/on),
+	 * creating visible percentage jumps.  Rate-limit SOC drops to
+	 * 1% per polling cycle (5 seconds) regardless of display state.
 	 *
-	 * lcd_is_off is a transient flag set during the LCD-off snapshot
-	 * read so that we return the RAW soc (needed to compute the delta).
+	 * The OOS 11.0.9.1 binary only smoothed on LCD-off, but this
+	 * caused jumps on LCD-on transitions.  Always-on smoothing
+	 * eliminates jumps in all scenarios while maintaining accurate
+	 * long-term tracking (1%/5s = 12%/min >> any real drain rate).
 	 */
 	mutex_lock(&gauge_ic->soc_lock);
-	if (gauge_ic->lcd_is_off) {
-		/*
-		 * Snapshot read for lcd_off delta computation.
-		 * Return raw SOC without calibration to preserve soc_pre
-		 * (OOS 11 binary skips calibration in this path).
-		 */
-		mutex_unlock(&gauge_ic->soc_lock);
-		return soc;
-	}
-
-	if (gauge_ic->smooth_flag && gauge_ic->soc_pre > 0) {
+	if (gauge_ic->soc_smooth_inited && gauge_ic->soc_pre > 0) {
 		int delta = gauge_ic->soc_pre - soc;
 
-		if (delta > 0) {
+		if (delta > 1 && delta <= 4) {
+			/*
+			 * Small jump (2-4%): gauge catch-up after load change.
+			 * Smooth by 1% per cycle to avoid visible jumps.
+			 */
 			soc = gauge_ic->soc_pre - 1;
-			gauge_ic->soc_pre = soc;
 		}
-		/* delta <= 0: SOC rose or unchanged — use raw value */
+		/*
+		 * delta <= 1: normal 0-1% drop, use raw value.
+		 * delta > 4: large jump (suspend/recalibration), pass
+		 * through immediately to avoid dangerous lag at low SOC.
+		 */
 	}
 	mutex_unlock(&gauge_ic->soc_lock);
 
@@ -1742,82 +1741,6 @@ read_soc_err:
 		return gauge_ic->soc_pre;
 	else
 		return 0;
-}
-
-/*
- * bq27541_set_lcd_off_status - toggle gauge-level SOC smoothing on LCD change
- *
- * Reverse-engineered from OOS 11.0.9.1 binary (bq27541_set_lcd_off_status at
- * 0xffffffc000d0ff38).  When the display turns off, this function:
- *   1. Takes a raw SOC snapshot (with lcd_is_off flag to bypass smoothing)
- *   2. Computes the delta between the last reported (smoothed) SOC and raw SOC
- *   3. Enables smooth_flag so subsequent reads in bq27541_get_battery_soc()
- *      will rate-limit SOC drops to 1% per cycle
- *
- * When the display turns back on, smoothing is disabled and the delta is reset.
- */
-static void bq27541_lcd_off_work_func(struct work_struct *work)
-{
-	struct chip_bq27541 *chip = container_of(work,
-			struct chip_bq27541, lcd_off_work.work);
-	int raw_soc;
-
-	if (!chip)
-		return;
-
-	/*
-	 * Take raw snapshot. lcd_is_off forces get_battery_soc
-	 * to return raw value without smoothing/calibration.
-	 */
-	mutex_lock(&chip->soc_lock);
-	chip->lcd_is_off = true;
-	mutex_unlock(&chip->soc_lock);
-
-	raw_soc = bq27541_get_battery_soc();
-
-	mutex_lock(&chip->soc_lock);
-	chip->lcd_is_off = false;
-	/* Calculate delta for logging */
-	chip->lcd_off_delt_soc = chip->soc_pre - raw_soc;
-	mutex_unlock(&chip->soc_lock);
-
-	pr_info("BQ: %s: lcd_off_delt_soc:%d,soc=%d,soc_pre=%d\n",
-		__func__, chip->lcd_off_delt_soc,
-		raw_soc, chip->soc_pre);
-
-	/* Release wake lock held by notifier */
-	if (chip->soc_smooth_ws)
-		__pm_relax(chip->soc_smooth_ws);
-}
-
-static int bq27541_set_lcd_off_status(int lcd_off)
-{
-	if (!gauge_ic)
-		return 0;
-
-	pr_info("BQ: %s: lcd_is_off=%d\n", __func__, lcd_off);
-
-	if (lcd_off) {
-		/*
-		 * Defer I2C read to workqueue (unsafe in atomic notifier).
-		 * Hold wakelock to ensure work runs before suspend.
-		 */
-		gauge_ic->smooth_flag = true;
-		if (gauge_ic->soc_smooth_ws)
-			__pm_stay_awake(gauge_ic->soc_smooth_ws);
-		schedule_delayed_work(&gauge_ic->lcd_off_work, 0);
-	} else {
-		/* LCD ON: Cancel pending work and disable smoothing */
-		cancel_delayed_work(&gauge_ic->lcd_off_work);
-
-		gauge_ic->smooth_flag = false;
-		gauge_ic->lcd_off_delt_soc = 0;
-		gauge_ic->lcd_is_off = false; /* Ensure cleared if work canceled */
-
-		if (gauge_ic->soc_smooth_ws)
-			__pm_relax(gauge_ic->soc_smooth_ws);
-	}
-	return 0;
 }
 
 static int bq27541_get_average_current(void)
@@ -2018,7 +1941,6 @@ static struct oplus_gauge_operations bq27541_gauge_ops = {
 	.clear_gauge_i2c_err = bq27541_clear_gauge_i2c_err,
 	.protect_check = zy0603_protect_check,
 	.afi_update_done = zy0603_afi_update_done,
-	.set_lcd_off_status = bq27541_set_lcd_off_status,
 };
 
 static void gauge_set_cmd_addr(struct chip_bq27541 *chip, int device_type)
@@ -3981,11 +3903,7 @@ rerun :
 	schedule_delayed_work(&fg_ic->hw_config, 0);
 */
 	fg_ic->soc_pre = 50;
-	fg_ic->smooth_flag = false;
-	fg_ic->lcd_is_off = false;
-	fg_ic->lcd_off_delt_soc = 0;
-	fg_ic->soc_smooth_ws = wakeup_source_register(NULL, "soc_smooth_ws");
-	INIT_DELAYED_WORK(&fg_ic->lcd_off_work, bq27541_lcd_off_work_func);
+	fg_ic->soc_smooth_inited = false;
 	mutex_init(&fg_ic->soc_lock);
 
 	if(fg_ic->batt_bq28z610) {
