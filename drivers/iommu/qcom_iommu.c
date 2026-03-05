@@ -534,6 +534,7 @@ static int qcom_iommu_of_xlate(struct device *dev, struct of_phandle_args *args)
 		return -EINVAL;
 
 	qcom_iommu = platform_get_drvdata(iommu_pdev);
+	put_device(&iommu_pdev->dev);
 
 	/* make sure the asid specified in dt is valid, so we don't have
 	 * to sanity check this elsewhere, since 'asid - 1' is used to
