@@ -26,6 +26,8 @@
 #include <net/genetlink.h>
 #include <linux/suspend.h>
 
+#include "../base/base.h"
+
 #define CREATE_TRACE_POINTS
 #include <trace/events/thermal.h>
 
@@ -1332,6 +1334,11 @@ thermal_zone_device_register(const char *type, int trips, int mask,
 	if (result)
 		goto remove_device_groups;
 
+	/* Create named symlink: /sys/class/thermal/<type> -> thermal_zoneN */
+	if (tz->type[0])
+		sysfs_create_link(&thermal_class.p->subsys.kobj,
+				  &tz->device.kobj, tz->type);
+
 	for (count = 0; count < trips; count++) {
 		if (tz->ops->get_trip_type(tz, count, &trip_type))
 			set_bit(count, &tz->trips_disabled);
@@ -1447,6 +1454,8 @@ void thermal_zone_device_unregister(struct thermal_zone_device *tz)
 	thermal_set_governor(tz, NULL);
 
 	thermal_remove_hwmon_sysfs(tz);
+	if (tz->type[0])
+		sysfs_remove_link(&thermal_class.p->subsys.kobj, tz->type);
 	ida_simple_remove(&thermal_tz_ida, tz->id);
 	ida_destroy(&tz->ida);
 	mutex_destroy(&tz->lock);
