@@ -276,9 +276,14 @@ static void sugov_set_iowait_boost(struct sugov_cpu *sg_cpu, u64 time,
 		sg_cpu->iowait_boost_pending = true;
 
 		if (sg_cpu->iowait_boost) {
+			unsigned int thermal_max = sg_policy->policy->max;
+
 			sg_cpu->iowait_boost <<= 1;
 			if (sg_cpu->iowait_boost > sg_cpu->iowait_boost_max)
 				sg_cpu->iowait_boost = sg_cpu->iowait_boost_max;
+			/* Don't boost beyond thermal limit */
+			if (sg_cpu->iowait_boost > thermal_max)
+				sg_cpu->iowait_boost = thermal_max;
 		} else {
 			sg_cpu->iowait_boost = sg_cpu->sg_policy->policy->min;
 		}
