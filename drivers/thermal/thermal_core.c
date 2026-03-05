@@ -1436,6 +1436,15 @@ thermal_zone_device_register(const char *type, int trips, int mask,
 	if (result)
 		dev_err(&tz->device, "Failed to create tz_map soft link\n");
 
+	if (tz->type[0]) {
+		result = sysfs_create_link(&thermal_class.p->subsys.kobj,
+					   &tz->device.kobj, tz->type);
+		if (result)
+			dev_err(&tz->device,
+				"Failed to create %s soft link in class\n",
+				tz->type);
+	}
+
 	return tz;
 
 unregister:
@@ -1505,6 +1514,8 @@ void thermal_zone_device_unregister(struct thermal_zone_device *tz)
 	thermal_set_governor(tz, NULL);
 
 	thermal_remove_hwmon_sysfs(tz);
+	if (tz->type[0])
+		sysfs_remove_link(&thermal_class.p->subsys.kobj, tz->type);
 	ida_simple_remove(&thermal_tz_ida, tz->id);
 	ida_destroy(&tz->ida);
 	mutex_destroy(&tz->lock);
