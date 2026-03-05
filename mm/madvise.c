@@ -41,6 +41,8 @@ static int madvise_need_mmap_write(int behavior)
 	case MADV_WILLNEED:
 	case MADV_DONTNEED:
 	case MADV_FREE:
+	case MADV_COLD:
+	case MADV_PAGEOUT:
 		return 0;
 	default:
 		/* be safe, default to 1. list exceptions explicitly */
@@ -689,6 +691,9 @@ madvise_vma(struct vm_area_struct *vma, struct vm_area_struct **prev,
 	case MADV_FREE:
 	case MADV_DONTNEED:
 		return madvise_dontneed_free(vma, prev, start, end, behavior);
+	case MADV_COLD:
+	case MADV_PAGEOUT:
+		return 0;
 	default:
 		return madvise_behavior(vma, prev, start, end, behavior);
 	}
@@ -719,6 +724,8 @@ madvise_behavior_valid(int behavior)
 	case MADV_DODUMP:
 	case MADV_WIPEONFORK:
 	case MADV_KEEPONFORK:
+	case MADV_COLD:
+	case MADV_PAGEOUT:
 #ifdef CONFIG_MEMORY_FAILURE
 	case MADV_SOFT_OFFLINE:
 	case MADV_HWPOISON:
