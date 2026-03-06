@@ -28,3 +28,22 @@ config QCOM_KGSL_IOMMU
 config CORESIGHT_ADRENO
 	bool
 	default y if QCOM_KGSL=y && CORESIGHT=y
+
+config ADRENO_GPU_OVERCLOCK
+	bool "Overclock Adreno 640 GPU to 757 MHz"
+	depends on QCOM_KGSL
+	default n
+	help
+	  Raises the maximum GPU frequency of the Adreno 640 from
+	  675 MHz to 757 MHz. This requires adequate cooling and may
+	  reduce battery life. Use at your own risk.
+
+config ADRENO_GPU_OVERCLOCK_835
+	bool "Overclock Adreno 640 GPU to 835 MHz (extreme)"
+	depends on ADRENO_GPU_OVERCLOCK
+	default n
+	help
+	  Raises the maximum GPU frequency of the Adreno 640 from
+	  675 MHz to 835 MHz. This is an extreme overclock that
+	  significantly increases power consumption and heat output.
+	  Not recommended for daily use. Implies ADRENO_GPU_OVERCLOCK.

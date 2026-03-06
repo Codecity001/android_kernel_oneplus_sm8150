@@ -13,6 +13,20 @@
 &soc {
 	gpu_opp_table_v2: gpu_opp_table_v2 {
 		compatible = "operating-points-v2";
+#ifdef CONFIG_ADRENO_GPU_OVERCLOCK_835
+		opp-835000000 {
+			opp-hz = /bits/ 64 <835000000>;
+			opp-microvolt = <RPMH_REGULATOR_LEVEL_TURBO_L1>;
+		};
+#endif
+
+#ifdef CONFIG_ADRENO_GPU_OVERCLOCK
+		opp-757000000 {
+			opp-hz = /bits/ 64 <757000000>;
+			opp-microvolt = <RPMH_REGULATOR_LEVEL_NOM_L2>;
+		};
+#endif
+
 
 		opp-675000000 {
 			opp-hz = /bits/ 64 <675000000>;
