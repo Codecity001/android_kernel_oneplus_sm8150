@@ -179,8 +179,6 @@ DTC_INCLUDE    := $(srctree)/scripts/dtc/include-prefixes
 dtc_cpp_flags  = -Wp,-MD,$(depfile).pre.tmp -nostdinc                    \
 		 $(addprefix -I,$(DTC_INCLUDE))                          \
 		 -undef -D__DTS__
-dtc_cpp_flags += $(if $(CONFIG_ADRENO_GPU_OVERCLOCK),-DCONFIG_ADRENO_GPU_OVERCLOCK)
-dtc_cpp_flags += $(if $(CONFIG_ADRENO_GPU_OVERCLOCK_835),-DCONFIG_ADRENO_GPU_OVERCLOCK_835)
 
 # Finds the multi-part object the current object will be linked into
 modname-multi = $(sort $(foreach m,$(multi-used),\
