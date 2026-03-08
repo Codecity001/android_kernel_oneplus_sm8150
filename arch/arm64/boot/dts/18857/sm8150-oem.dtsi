@@ -374,6 +374,7 @@
 
 		/* SW Support Feature Control */
 		black_gesture_support;
+		new_set_irq_wake_support;
 		fw_update_app_support;
 		smart_gesture_support;
 		game_switch_support;
