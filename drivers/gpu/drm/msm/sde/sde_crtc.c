@@ -3171,7 +3171,17 @@ void sde_crtc_complete_commit(struct drm_crtc *crtc,
 	sde_crtc = to_sde_crtc(crtc);
 	SDE_EVT32_VERBOSE(DRMID(crtc));
 
-	sde_core_perf_crtc_update(crtc, 0, false);
+	/*
+	 * Vblank-based synchronisation for the on-screen fingerprint notifier
+	 * must run BEFORE we vote down MDP clocks/bandwidth.  Reducing the
+	 * performance vote first can drop the MDP core clock or bus bandwidth
+	 * to zero during a display-mode transition (HBM on/off), which stops
+	 * vblank interrupts and causes the wait_event_timeout() calls below
+	 * to always time out, leaving the panel in an indeterminate state.
+	 *
+	 * The post-commit performance reduction is cheap and idempotent; the
+	 * extra few milliseconds of holding the higher vote is inconsequential.
+	 */
 #ifdef OPLUS_BUG_STABILITY
 	{
 		struct sde_crtc_state *old_cstate;
@@ -3232,6 +3242,9 @@ void sde_crtc_complete_commit(struct drm_crtc *crtc,
 		}
 	}
 #endif /* OPLUS_BUG_STABILITY */
+
+	/* Vote down clocks/bandwidth only after all display sync work is done */
+	sde_core_perf_crtc_update(crtc, 0, false);
 }
 
 /**
