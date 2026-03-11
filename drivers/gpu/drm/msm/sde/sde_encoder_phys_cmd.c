@@ -568,9 +568,17 @@ static int _sde_encoder_phys_cmd_handle_ppdone_timeout(
 	/* decrement the kickoff_cnt before checking for ESD status */
 	atomic_add_unless(&phys_enc->pending_kickoff_cnt, -1, 0);
 
-	/* check if panel is still sending TE signal or not */
-	if (sde_connector_esd_status(phys_enc->connector) ||
-	    sde_conn->panel_dead)
+	/*
+	 * Do NOT run synchronous ESD/TE probing here.
+	 * sde_connector_esd_status() acquires panel_lock and may wait
+	 * up to 60 ms for TE; if the panel is stuck because of a
+	 * clock-gating race (HBM sent before KICKOFF) the lock holder
+	 * is also waiting for the IRQ that needs clocks, causing a
+	 * circular deadlock and complete system freeze.
+	 *
+	 * Only check the cached panel_dead flag set by the ESD thread.
+	 */
+	if (sde_conn->panel_dead)
 		goto exit;
 
 	/* to avoid flooding, only log first time, and "dead" time */
@@ -591,15 +599,24 @@ static int _sde_encoder_phys_cmd_handle_ppdone_timeout(
 	}
 
 	/*
-	 * if the recovery event is registered by user, don't panic
-	 * trigger panic on first timeout if no listener registered
+	 * If the recovery event is registered by userspace (SurfaceFlinger /
+	 * display HAL), delegate recovery through the normal event path.
+	 *
+	 * If there is no recovery listener, do NOT panic unconditionally on
+	 * the first timeout: the timeout may have been caused by a transient
+	 * clock-gating race during idle power-collapse (HBM / fingerprint
+	 * commands sent before KICKOFF resource control re-enabled clocks).
+	 * Allow up to PP_TIMEOUT_MAX_TRIALS attempts so that the hardware
+	 * reset path in sde_encoder has a chance to recover the panel.  Only
+	 * panic if recovery has been exhausted and the display is still stuck,
+	 * indicating a genuine hardware fault rather than a SW race.
 	 */
 	if (recovery_events) {
 		event = cmd_enc->pp_timeout_report_cnt > PP_TIMEOUT_MAX_TRIALS ?
 			SDE_RECOVERY_HARD_RESET : SDE_RECOVERY_CAPTURE;
 		sde_connector_event_notify(conn, DRM_EVENT_SDE_HW_RECOVERY,
 				sizeof(uint8_t), event);
-	} else if (cmd_enc->pp_timeout_report_cnt) {
+	} else if (cmd_enc->pp_timeout_report_cnt > PP_TIMEOUT_MAX_TRIALS) {
 		SDE_DBG_DUMP("dsi_dbg_bus", "panic");
 	}
 

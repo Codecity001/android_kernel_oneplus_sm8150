@@ -83,7 +83,7 @@ int dsi_phy_hw_calculate_timing_params(struct dsi_phy_hw *phy,
 void dsi_phy_hw_v2_0_regulator_enable(struct dsi_phy_hw *phy,
 				      struct dsi_phy_per_lane_cfgs *cfg);
 void dsi_phy_hw_v2_0_regulator_disable(struct dsi_phy_hw *phy);
-void dsi_phy_hw_v2_0_enable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *cfg);
+int dsi_phy_hw_v2_0_enable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *cfg);
 void dsi_phy_hw_v2_0_disable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *cfg);
 void dsi_phy_hw_v2_0_idle_on(struct dsi_phy_hw *phy, struct dsi_phy_cfg *cfg);
 void dsi_phy_hw_v2_0_idle_off(struct dsi_phy_hw *phy);
@@ -102,7 +102,7 @@ int dsi_phy_hw_v2_0_cache_phy_timings(struct dsi_phy_per_lane_cfgs *timings,
 void dsi_phy_hw_v3_0_regulator_enable(struct dsi_phy_hw *phy,
 				      struct dsi_phy_per_lane_cfgs *cfg);
 void dsi_phy_hw_v3_0_regulator_disable(struct dsi_phy_hw *phy);
-void dsi_phy_hw_v3_0_enable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *cfg);
+int dsi_phy_hw_v3_0_enable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *cfg);
 void dsi_phy_hw_v3_0_disable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *cfg);
 int dsi_phy_hw_v3_0_wait_for_lane_idle(struct dsi_phy_hw *phy, u32 lanes);
 void dsi_phy_hw_v3_0_ulps_request(struct dsi_phy_hw *phy,
@@ -118,7 +118,7 @@ int dsi_phy_hw_v3_0_lane_reset(struct dsi_phy_hw *phy);
 void dsi_phy_hw_v3_0_toggle_resync_fifo(struct dsi_phy_hw *phy);
 
 /* Definitions for 7nm PHY hardware driver */
-void dsi_phy_hw_v4_0_enable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *cfg);
+int dsi_phy_hw_v4_0_enable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *cfg);
 void dsi_phy_hw_v4_0_disable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *cfg);
 int dsi_phy_hw_v4_0_wait_for_lane_idle(struct dsi_phy_hw *phy, u32 lanes);
 void dsi_phy_hw_v4_0_ulps_request(struct dsi_phy_hw *phy,

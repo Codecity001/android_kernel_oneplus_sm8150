@@ -190,8 +190,8 @@ void dsi_phy_hw_v2_0_regulator_disable(struct dsi_phy_hw *phy)
  * @cfg:      Per lane configurations for timing, strength and lane
  *	      configurations.
  */
-void dsi_phy_hw_v2_0_enable(struct dsi_phy_hw *phy,
-			    struct dsi_phy_cfg *cfg)
+int dsi_phy_hw_v2_0_enable(struct dsi_phy_hw *phy,
+			   struct dsi_phy_cfg *cfg)
 {
 	int i, j;
 	struct dsi_phy_per_lane_cfgs *lanecfg = &cfg->lanecfg;
@@ -277,6 +277,7 @@ void dsi_phy_hw_v2_0_enable(struct dsi_phy_hw *phy,
 		DSI_W32(phy, DSIPHY_PLL_PLL_BANDGAP, 0x3);
 
 	pr_debug("[DSI_%d]Phy enabled ", phy->index);
+	return 0;
 }
 
 /**

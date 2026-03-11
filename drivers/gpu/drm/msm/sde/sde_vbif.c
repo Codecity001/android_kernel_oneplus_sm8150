@@ -67,7 +67,6 @@ int sde_vbif_halt_plane_xin(struct sde_kms *sde_kms, u32 xin_id, u32 clk_ctrl)
 {
 	struct sde_hw_vbif *vbif = NULL;
 	struct sde_hw_mdp *mdp;
-	bool forced_on = false;
 	bool status;
 	int rc = 0;
 
@@ -95,9 +94,9 @@ int sde_vbif_halt_plane_xin(struct sde_kms *sde_kms, u32 xin_id, u32 clk_ctrl)
 	SDE_EVT32_VERBOSE(vbif->idx, xin_id);
 
 	/*
-	 * If status is 0, then make sure client clock is not gated
-	 * while halting by forcing it ON only if it was not previously
-	 * forced on. If status is 1 then its already halted.
+	 * If status is 0, the plane is not yet halted — force the client
+	 * clock ON to ensure it is not gated while the halt request is
+	 * in flight.  If status is 1, it is already halted.
 	 */
 	status = vbif->ops.get_halt_ctrl(vbif, xin_id);
 	if (status) {
@@ -105,7 +104,7 @@ int sde_vbif_halt_plane_xin(struct sde_kms *sde_kms, u32 xin_id, u32 clk_ctrl)
 		return 0;
 	}
 
-	forced_on = mdp->ops.setup_clk_force_ctrl(mdp, clk_ctrl, true);
+	mdp->ops.setup_clk_force_ctrl(mdp, clk_ctrl, true);
 
 	/* send halt request for unused plane's xin client */
 	vbif->ops.set_halt_ctrl(vbif, xin_id, true);
@@ -120,7 +119,18 @@ int sde_vbif_halt_plane_xin(struct sde_kms *sde_kms, u32 xin_id, u32 clk_ctrl)
 
 	/* open xin client to enable transactions */
 	vbif->ops.set_halt_ctrl(vbif, xin_id, false);
-	if (forced_on)
+	/*
+	 * Release the forced clock only on successful halt.  If halt timed
+	 * out, pending bus transactions are still in flight; releasing the
+	 * clock can cause SMMU faults and unrecoverable bus hangs.
+	 *
+	 * Always release on success unconditionally: a prior timed-out call
+	 * may have left the force bit set (setup_clk_force_ctrl would then
+	 * return false because the bit was already on), so this is the only
+	 * code path that can clean up that stale force state.
+	 * Concurrent access is impossible — we hold vbif->mutex.
+	 */
+	if (!rc)
 		mdp->ops.setup_clk_force_ctrl(mdp, clk_ctrl, false);
 
 	mutex_unlock(&vbif->mutex);

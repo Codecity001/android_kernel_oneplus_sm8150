@@ -241,7 +241,7 @@ struct dsi_phy_hw_ops {
 	 * @cfg:      Per lane configurations for timing, strength and lane
 	 *	      configurations.
 	 */
-	void (*enable)(struct dsi_phy_hw *phy, struct dsi_phy_cfg *cfg);
+	int (*enable)(struct dsi_phy_hw *phy, struct dsi_phy_cfg *cfg);
 
 	/**
 	 * disable() - Disable PHY hardware

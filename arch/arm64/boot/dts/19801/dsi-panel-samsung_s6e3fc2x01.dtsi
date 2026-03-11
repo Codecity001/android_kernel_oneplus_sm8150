@@ -39,7 +39,14 @@
 		qcom,mdss-dsi-wr-mem-start = <0x2c>;
 		qcom,mdss-dsi-wr-mem-continue = <0x3c>;
 		qcom,mdss-dsi-te-dcs-command = <1>;
-		//qcom,mdss-dsi-te-check-enable;
+		/*
+		 * qcom,mdss-dsi-te-check-enable is not parsed by the DSI
+		 * driver and has no effect. ESD mode is controlled solely by
+		 * qcom,mdss-dsi-panel-status-check-mode below.  The driver
+		 * supports only one mode at a time: reg_read and te_signal_check
+		 * are mutually exclusive — te_signal_check would replace
+		 * reg_read, not supplement it.
+		 */
 		qcom,esd-check-enabled;
 		qcom,mdss-dsi-panel-status-check-mode = "reg_read";
 		qcom,mdss-dsi-panel-status-command = [06 01 00 01 05 00 02 0A 08];
@@ -52,7 +59,6 @@
 		qcom,mdss-dsi-acl-cmd-index = <0>;
 		qcom,mdss-dsi-acl-mode-index = <1>;
 		qcom,mdss-bl-high2bit;
-		//qcom,mdss-dsi-panel-status-check-mode = "te_signal_check";
 		qcom,mdss-dsi-panel-seria-num-year-index = <12>;
 		qcom,mdss-dsi-panel-seria-num-mon-index = <12>;
 		qcom,mdss-dsi-panel-seria-num-day-index = <13>;
@@ -60,6 +66,14 @@
 		qcom,mdss-dsi-panel-seria-num-min-index = <15>;
 		qcom,mdss-dsi-panel-seria-num-sec-index = <16>;
 		qcom,ulps-enabled;
+		/*
+		 * Keep PHY in ULPS during suspend instead of full power-down.
+		 * This avoids a full PHY reset+init on every resume, making
+		 * the display wake path faster and less prone to hang.
+		 * dsi_display_prepare() will skip phy_sw_reset/phy_enable when
+		 * both ulps_suspend_enabled and ulps_enabled are true.
+		 */
+		qcom,suspend-ulps-enabled;
 		qcom,mdss-brightness-max-level = <1023>;
 		/* HDR Setting */
 		qcom,mdss-dsi-panel-hdr-enabled;
