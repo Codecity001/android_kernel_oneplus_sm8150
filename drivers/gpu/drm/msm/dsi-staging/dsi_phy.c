@@ -543,13 +543,23 @@ static struct platform_driver dsi_phy_platform_driver = {
 	},
 };
 
-static void dsi_phy_enable_hw(struct msm_dsi_phy *phy)
+static int dsi_phy_enable_hw(struct msm_dsi_phy *phy)
 {
+	int rc;
+
 	if (phy->hw.ops.regulator_enable)
 		phy->hw.ops.regulator_enable(&phy->hw, &phy->cfg.regulators);
 
-	if (phy->hw.ops.enable)
-		phy->hw.ops.enable(&phy->hw, &phy->cfg);
+	if (phy->hw.ops.enable) {
+		rc = phy->hw.ops.enable(&phy->hw, &phy->cfg);
+		if (rc) {
+			if (phy->hw.ops.regulator_disable)
+				phy->hw.ops.regulator_disable(&phy->hw);
+			return rc;
+		}
+	}
+
+	return 0;
 }
 
 static void dsi_phy_disable_hw(struct msm_dsi_phy *phy)
@@ -944,7 +954,12 @@ int dsi_phy_enable(struct msm_dsi_phy *phy,
 	}
 
 	if (!is_cont_splash_enabled) {
-		dsi_phy_enable_hw(phy);
+		rc = dsi_phy_enable_hw(phy);
+		if (rc) {
+			pr_err("[%s] PHY hardware enable failed, rc=%d\n",
+			       phy->name, rc);
+			goto error;
+		}
 		pr_debug("cont splash not enabled, phy enable required\n");
 	}
 	phy->dsi_phy_state = DSI_PHY_ENGINE_ON;
@@ -1061,8 +1076,21 @@ int dsi_phy_idle_ctrl(struct msm_dsi_phy *phy, bool enable)
 			phy->hw.ops.regulator_enable(&phy->hw,
 				&phy->cfg.regulators);
 
-		if (phy->hw.ops.enable)
-			phy->hw.ops.enable(&phy->hw, &phy->cfg);
+		if (phy->hw.ops.enable) {
+			int rc = phy->hw.ops.enable(&phy->hw, &phy->cfg);
+
+			if (rc) {
+				pr_err("[%s] PHY enable failed in idle_ctrl, rc=%d\n",
+				       phy->name, rc);
+				if (phy->hw.ops.phy_idle_off)
+					phy->hw.ops.phy_idle_off(&phy->hw);
+				if (phy->hw.ops.regulator_disable)
+					phy->hw.ops.regulator_disable(
+						&phy->hw);
+				mutex_unlock(&phy->phy_lock);
+				return rc;
+			}
+		}
 
 		phy->dsi_phy_state = DSI_PHY_ENGINE_ON;
 	} else {
