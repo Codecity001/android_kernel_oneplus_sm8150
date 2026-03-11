@@ -4637,13 +4637,6 @@ int sde_encoder_prepare_for_kickoff(struct drm_encoder *drm_enc,
 	SDE_DEBUG_ENC(sde_enc, "\n");
 	SDE_EVT32(DRMID(drm_enc));
 
-#ifdef OPLUS_BUG_STABILITY
-	if (sde_enc->cur_master) {
-		sde_connector_update_backlight(sde_enc->cur_master->connector, false);
-		sde_connector_update_hbm(sde_enc->cur_master->connector);
-	}
-#endif /* OPLUS_BUG_STABILITY */
-
 	/* save this for later, in case of errors */
 	if (sde_enc->cur_master && sde_enc->cur_master->ops.get_wr_line_count)
 		ln_cnt1 = sde_enc->cur_master->ops.get_wr_line_count(
@@ -4681,6 +4674,21 @@ int sde_encoder_prepare_for_kickoff(struct drm_encoder *drm_enc,
 		ret = rc;
 		goto end;
 	}
+
+#ifdef OPLUS_BUG_STABILITY
+	/*
+	 * HBM / backlight updates must run after resource_control(KICKOFF)
+	 * to guarantee MDP core clocks and DSI link clocks are enabled.
+	 * Calling these before KICKOFF when the encoder is in IDLE state
+	 * (clocks off) causes vblank waits inside update_hbm() to time out,
+	 * sending HBM DSI commands with wrong TE timing, which makes the
+	 * Samsung panel stop emitting TE → PP_DONE never fires → panic.
+	 */
+	if (sde_enc->cur_master) {
+		sde_connector_update_backlight(sde_enc->cur_master->connector, false);
+		sde_connector_update_hbm(sde_enc->cur_master->connector);
+	}
+#endif /* OPLUS_BUG_STABILITY */
 
 	/* if any phys needs reset, reset all phys, in-order */
 	if (needs_hw_reset) {
