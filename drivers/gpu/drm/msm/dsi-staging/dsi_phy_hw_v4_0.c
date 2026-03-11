@@ -321,8 +321,8 @@ static void dsi_phy_hw_dphy_enable(struct dsi_phy_hw *phy,
  * @cfg:      Per lane configurations for timing, strength and lane
  *	      configurations.
  */
-void dsi_phy_hw_v4_0_enable(struct dsi_phy_hw *phy,
-			    struct dsi_phy_cfg *cfg)
+int dsi_phy_hw_v4_0_enable(struct dsi_phy_hw *phy,
+			   struct dsi_phy_cfg *cfg)
 {
 	int rc = 0;
 	u32 status;
@@ -337,7 +337,7 @@ void dsi_phy_hw_v4_0_enable(struct dsi_phy_hw *phy,
 		status, (status & BIT(0)), delay_us, timeout_us);
 	if (rc) {
 		pr_err("Ref gen not ready. Aborting\n");
-		return;
+		return rc;
 	}
 
 	if (cfg->phy_type == DSI_PHY_TYPE_CPHY)
@@ -345,6 +345,7 @@ void dsi_phy_hw_v4_0_enable(struct dsi_phy_hw *phy,
 	else /* Default PHY type is DPHY */
 		dsi_phy_hw_dphy_enable(phy, cfg);
 
+	return 0;
 }
 
 /**
