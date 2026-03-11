@@ -2106,8 +2106,11 @@ static int dsi_display_phy_idle_on(struct dsi_display *display,
 	}
 
 	if (mmss_clamp && !display->phy_idle_power_off) {
-		dsi_display_phy_enable(display);
-		return 0;
+		rc = dsi_display_phy_enable(display);
+		if (rc)
+			pr_err("[%s] PHY enable failed during idle-on, rc=%d\n",
+			       display->name, rc);
+		return rc;
 	}
 
 	m_ctrl = &display->ctrl[display->cmd_master_idx];
@@ -2875,6 +2878,12 @@ static int dsi_display_phy_disable(struct dsi_display *display)
 
 static int dsi_display_wake_up(struct dsi_display *display)
 {
+	if (!display || !display->panel) {
+		pr_err("invalid display or panel\n");
+		return -EINVAL;
+	}
+
+	SDE_EVT32(display->ulps_enabled, display->panel->power_mode);
 	return 0;
 }
 
@@ -3486,8 +3495,14 @@ int dsi_post_clkon_cb(void *priv,
 		 * Phy setup is needed if coming out of idle
 		 * power collapse with clamps enabled.
 		 */
-		if (display->phy_idle_power_off || mmss_clamp)
-			dsi_display_phy_idle_on(display, mmss_clamp);
+		if (display->phy_idle_power_off || mmss_clamp) {
+			rc = dsi_display_phy_idle_on(display, mmss_clamp);
+			if (rc) {
+				pr_err("%s: PHY idle-on failed, rc=%d\n",
+					__func__, rc);
+				goto error;
+			}
+		}
 
 		if (display->ulps_enabled && mmss_clamp) {
 			/*
@@ -7336,6 +7351,8 @@ int dsi_display_prepare(struct dsi_display *display)
 	 * is powered on, phy init needs to be done unconditionally.
 	 */
 	if (!display->panel->ulps_suspend_enabled || !display->ulps_enabled) {
+		unsigned long phy_start = jiffies;
+
 		rc = dsi_display_phy_sw_reset(display);
 		if (rc) {
 			pr_err("[%s] failed to reset phy, rc=%d\n",
@@ -7349,6 +7366,10 @@ int dsi_display_prepare(struct dsi_display *display)
 			       display->name, rc);
 			goto error_ctrl_clk_off;
 		}
+
+		if (time_after(jiffies, phy_start + msecs_to_jiffies(500)))
+			pr_warn("[%s] DSI PHY reset+enable took > 500ms, possible PHY hang\n",
+				display->name);
 	}
 
 	rc = dsi_display_set_clk_src(display, true);
@@ -7829,6 +7850,22 @@ int dsi_display_post_enable(struct dsi_display *display)
 			DSI_ALL_CLKS, DSI_CLK_OFF);
 
 	mutex_unlock(&display->display_lock);
+
+	/*
+	 * Verify panel is alive after enable by checking for TE signal.
+	 * Done outside display_lock to avoid holding the mutex across
+	 * a blocking hardware wait (~16ms at 60Hz, up to 60ms timeout).
+	 * TE pin is driven directly by the panel, independent of DSI clocks.
+	 */
+	if (display->config.panel_mode == DSI_OP_CMD_MODE &&
+	    gpio_is_valid(display->disp_te_gpio)) {
+		int te_rc = dsi_display_status_check_te(display);
+
+		if (te_rc <= 0)
+			pr_warn("[%s] panel TE not detected after enable\n",
+				display->name);
+	}
+
 	return rc;
 }
 
@@ -7920,11 +7957,23 @@ int dsi_display_disable(struct dsi_display *display)
 			       display->name, rc);
 
 		set_oplus_display_scene(OPLUS_DISPLAY_NORMAL_SCENE);
-		msm_drm_notifier_call_chain(MSM_DRM_EVENT_BLANK,
-							&notifier_data);
 	}
 
 	mutex_unlock(&display->display_lock);
+
+#ifdef OPLUS_BUG_STABILITY
+	/*
+	 * Fire the EVENT_BLANK notifier outside display_lock.
+	 * Registered callbacks (touchscreen, fingerprint) may call back
+	 * into the display subsystem; doing so while display_lock is held
+	 * causes a circular deadlock that freezes the entire system.
+	 */
+	if (!display->poms_pending) {
+		msm_drm_notifier_call_chain(MSM_DRM_EVENT_BLANK,
+							&notifier_data);
+	}
+#endif /* OPLUS_BUG_STABILITY */
+
 	SDE_EVT32(SDE_EVTLOG_FUNC_EXIT);
 	return rc;
 }
@@ -8199,7 +8248,7 @@ void dsi_display_gamma_read_work(struct work_struct *work)
 
 int dsi_display_unprepare(struct dsi_display *display)
 {
-	int rc = 0;
+	int rc = 0, ret = 0;
 
 	if (!display) {
 		pr_err("Invalid params\n");
@@ -8209,57 +8258,80 @@ int dsi_display_unprepare(struct dsi_display *display)
 	SDE_EVT32(SDE_EVTLOG_FUNC_ENTRY);
 	mutex_lock(&display->display_lock);
 
-	rc = dsi_display_wake_up(display);
-	if (rc)
+	ret = dsi_display_wake_up(display);
+	if (ret) {
 		pr_err("[%s] display wake up failed, rc=%d\n",
-		       display->name, rc);
+		       display->name, ret);
+		rc = ret;
+	}
 
-	if (!display->poms_pending) {
-		rc = dsi_panel_unprepare(display->panel);
-		if (rc)
+	if (!display->poms_pending && display->panel) {
+		ret = dsi_panel_unprepare(display->panel);
+		if (ret) {
 			pr_err("[%s] panel unprepare failed, rc=%d\n",
-			       display->name, rc);
+			       display->name, ret);
+			if (!rc)
+				rc = ret;
+		}
 	}
 
 	dsi_display_set_clk_src(display, false);
 
-	rc = dsi_display_ctrl_host_disable(display);
-	if (rc)
+	ret = dsi_display_ctrl_host_disable(display);
+	if (ret) {
 		pr_err("[%s] failed to disable DSI host, rc=%d\n",
-		       display->name, rc);
-
-	rc = dsi_display_clk_ctrl(display->dsi_clk_handle,
-			DSI_LINK_CLK, DSI_CLK_OFF);
-	if (rc)
-		pr_err("[%s] failed to disable Link clocks, rc=%d\n",
-		       display->name, rc);
-
-	rc = dsi_display_ctrl_deinit(display);
-	if (rc)
-		pr_err("[%s] failed to deinit controller, rc=%d\n",
-		       display->name, rc);
-
-	if (!display->panel->ulps_suspend_enabled) {
-		rc = dsi_display_phy_disable(display);
-		if (rc)
-			pr_err("[%s] failed to disable DSI PHY, rc=%d\n",
-			       display->name, rc);
+		       display->name, ret);
+		if (!rc)
+			rc = ret;
 	}
 
-	rc = dsi_display_clk_ctrl(display->dsi_clk_handle,
+	ret = dsi_display_clk_ctrl(display->dsi_clk_handle,
+			DSI_LINK_CLK, DSI_CLK_OFF);
+	if (ret) {
+		pr_err("[%s] failed to disable Link clocks, rc=%d\n",
+		       display->name, ret);
+		if (!rc)
+			rc = ret;
+	}
+
+	ret = dsi_display_ctrl_deinit(display);
+	if (ret) {
+		pr_err("[%s] failed to deinit controller, rc=%d\n",
+		       display->name, ret);
+		if (!rc)
+			rc = ret;
+	}
+
+	if (display->panel && !display->panel->ulps_suspend_enabled) {
+		ret = dsi_display_phy_disable(display);
+		if (ret) {
+			pr_err("[%s] failed to disable DSI PHY, rc=%d\n",
+			       display->name, ret);
+			if (!rc)
+				rc = ret;
+		}
+	}
+
+	ret = dsi_display_clk_ctrl(display->dsi_clk_handle,
 			DSI_CORE_CLK, DSI_CLK_OFF);
-	if (rc)
+	if (ret) {
 		pr_err("[%s] failed to disable DSI clocks, rc=%d\n",
-		       display->name, rc);
+		       display->name, ret);
+		if (!rc)
+			rc = ret;
+	}
 
 	/* destrory dsi isr set up */
 	dsi_display_ctrl_isr_configure(display, false);
 
-	if (!display->poms_pending) {
-		rc = dsi_panel_post_unprepare(display->panel);
-		if (rc)
+	if (!display->poms_pending && display->panel) {
+		ret = dsi_panel_post_unprepare(display->panel);
+		if (ret) {
 			pr_err("[%s] panel post-unprepare failed, rc=%d\n",
-			       display->name, rc);
+			       display->name, ret);
+			if (!rc)
+				rc = ret;
+		}
 	}
 
 	mutex_unlock(&display->display_lock);
