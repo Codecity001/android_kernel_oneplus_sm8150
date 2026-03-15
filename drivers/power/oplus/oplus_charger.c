@@ -6309,6 +6309,7 @@ static void oplus_chg_update_ui_soc(struct oplus_chg_chip *chip)
 			&& chip->batt_exist && chip->batt_full && chip->mmi_chg && (chip->stop_chg == 1 || chip->charger_type == 5)) {
 #endif
 		chip->sleep_tm_sec = 0;
+		chip->sleep_soc_debt = 0;
 		if (oplus_short_c_batt_is_prohibit_chg(chip)) {
 			chip->prop_status = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		} else if ((chip->hmac) &&((chip->tbatt_status == BATTERY_STATUS__NORMAL)
@@ -6343,6 +6344,7 @@ static void oplus_chg_update_ui_soc(struct oplus_chg_chip *chip)
 					&& chip->mmi_chg && (chip->stop_chg == 1 || chip->charger_type == 5)) {
 #endif
 		chip->sleep_tm_sec = 0;
+		chip->sleep_soc_debt = 0;
 		chip->prop_status = POWER_SUPPLY_STATUS_CHARGING;
 		if (chip->smooth_soc == chip->ui_soc) {
 			soc_down_count = 0;
@@ -6397,35 +6399,57 @@ static void oplus_chg_update_ui_soc(struct oplus_chg_chip *chip)
 				soc_reduce_margin = (int)(chip->sleep_tm_sec / TEN_MINUTES);
 				if (soc_reduce_margin > chip->ui_soc)
 					soc_reduce_margin = chip->ui_soc;
-				if (soc_reduce_margin == 0) {
-					if ((chip->ui_soc - chip->smooth_soc) > 2) {
-						chip->ui_soc--;
-						soc_down_count = 0;
-					}
-				} else {
-					/*
-					 * H.41 proportional sleep path: drop by
-					 * soc_reduce_margin but never below
-					 * smooth_soc.  This allows multi-% catch-up
-					 * after long sleep without overshooting.
-					 */
-					int target = chip->ui_soc - soc_reduce_margin;
-					if (target < chip->smooth_soc)
-						target = chip->smooth_soc;
-					if (target < 0)
-						target = 0;
-					if (target < chip->ui_soc) {
-						chip->ui_soc = target;
-						soc_down_count = 0;
-					}
+				if (soc_reduce_margin == 0 &&
+						(chip->ui_soc - chip->smooth_soc) > 2)
+					soc_reduce_margin = 1;
+				if (soc_reduce_margin > 0) {
+					int max_resume_drop = chip->ui_soc - chip->smooth_soc;
+
+					if (max_resume_drop < 0)
+						max_resume_drop = 0;
+					if (soc_reduce_margin > max_resume_drop)
+						soc_reduce_margin = max_resume_drop;
+					chip->sleep_soc_debt += soc_reduce_margin;
+					if (chip->sleep_soc_debt > max_resume_drop)
+						chip->sleep_soc_debt = max_resume_drop;
+					pr_info("oplus_chg: sleep_soc_debt set: sleep_tm=%lus margin=%d max_drop=%d debt=%d ui=%d smooth=%d\n",
+						(unsigned long)sleep_tm, soc_reduce_margin, max_resume_drop,
+						chip->sleep_soc_debt,
+						chip->ui_soc, chip->smooth_soc);
 				}
 				chip->sleep_tm_sec = 0;
 			}
-			if (soc_down_count >= soc_down_limit && (chip->smooth_soc < chip->ui_soc || vbatt_too_low)) {
+			if (chip->sleep_soc_debt > 0 &&
+					(chip->smooth_soc < chip->ui_soc || vbatt_too_low)) {
+				/*
+				 * Rate-limit sleep debt drain to SOC_SYNC_DOWN_RATE_30S
+				 * (one decrement per 30 s = 6 x 5 s update ticks).
+				 *
+				 * Original code drained 1%/5 s: a debt of 4 emptied in
+				 * 15-20 s, inside Android BatteryService debounce window,
+				 * so all four power_supply_changed() calls were coalesced
+				 * into a single 4% icon jump.
+				 *
+				 * At 30 s/step a debt of 4 drains over ~120 s; each 1%
+				 * drop is individually visible.  30 s is still 2x faster
+				 * than the normal 60 s soc_down_limit path (SOC >= 60%),
+				 * so post-sleep responsiveness is preserved.
+				 */
+				if (soc_down_count >= SOC_SYNC_DOWN_RATE_30S) {
+					chip->sleep_soc_debt--;
+					soc_down_count = 0;
+					chip->ui_soc--;
+					pr_info("oplus_chg: sleep_debt drain: debt_remaining=%d ui=%d smooth=%d\n",
+						chip->sleep_soc_debt, chip->ui_soc, chip->smooth_soc);
+				}
+			} else if (soc_down_count >= soc_down_limit &&
+					(chip->smooth_soc < chip->ui_soc || vbatt_too_low)) {
 				chip->sleep_tm_sec = 0;
 				soc_down_count = 0;
 				chip->ui_soc--;
 			}
+		} else {
+			chip->sleep_soc_debt = 0;
 		}
 	}
 	if (chip->ui_soc < 2) {
@@ -7916,6 +7940,8 @@ void oplus_chg_soc_update_when_resume(unsigned long sleep_tm_sec)
 	g_charger_chip->soc = new_soc;
 	if(g_charger_chip->smooth_switch){
 		oplus_chg_smooth_to_soc(g_charger_chip);
+	} else {
+		g_charger_chip->smooth_soc = g_charger_chip->soc;
 	}
 	oplus_chg_update_ui_soc(g_charger_chip);
 }

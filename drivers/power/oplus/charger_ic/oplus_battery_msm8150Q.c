@@ -42,6 +42,8 @@
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
 #include <linux/rtc.h>
+#include <linux/ktime.h>
+#include <linux/timekeeping.h>
 #include <linux/proc_fs.h>
 #include <linux/iio/consumer.h>
 #include <linux/kthread.h>
@@ -14924,64 +14926,30 @@ bool oplus_sm8150_get_pd_type(void)
 	return false;
 }
 #endif /* OPLUS_FEATURE_CHG_BASIC */
-static int get_current_time(unsigned long *now_tm_sec)
+static unsigned long get_current_time(void)
 {
-	struct rtc_time tm;
-	struct rtc_device *rtc;
-	int rc;
-
-	rtc = rtc_class_open(CONFIG_RTC_HCTOSYS_DEVICE);
-	if (rtc == NULL) {
-		pr_err("%s: unable to open rtc device (%s)\n",
-			__FILE__, CONFIG_RTC_HCTOSYS_DEVICE);
-		return -EINVAL;
-	}
-
-	rc = rtc_read_time(rtc, &tm);
-	if (rc) {
-		pr_err("Error reading rtc device (%s) : %d\n",
-			CONFIG_RTC_HCTOSYS_DEVICE, rc);
-		goto close_time;
-	}
-
-	rc = rtc_valid_tm(&tm);
-	if (rc) {
-		pr_err("Invalid RTC time (%s): %d\n",
-			CONFIG_RTC_HCTOSYS_DEVICE, rc);
-		goto close_time;
-	}
-	rtc_tm_to_time(&tm, now_tm_sec);
-
-close_time:
-	rtc_class_close(rtc);
-	return rc;
+	return (unsigned long)(ktime_get_boottime_ns() / NSEC_PER_SEC);
 }
 
-static unsigned long suspend_tm_sec = 0;
+static unsigned long suspend_tm_sec;
+static bool suspend_tm_valid;
 
 extern void oplus_chg_cancel_update_work_sync(void);
 extern void oplus_chg_restart_update_work(void);
 
 static int smb5_pm_resume(struct device *dev)
 {
-	int rc = 0;
-	unsigned long resume_tm_sec = 0;
+	unsigned long resume_tm_sec;
 	unsigned long sleep_time = 0;
 
 	if (!g_oplus_chip)
 		return 0;
 
-	rc = get_current_time(&resume_tm_sec);
-	if (rc || suspend_tm_sec == -1) {
-		chg_err("RTC read failed\n");
-		sleep_time = 0;
-	} else {
+	resume_tm_sec = get_current_time();
+	if (suspend_tm_valid && resume_tm_sec >= suspend_tm_sec) {
 		sleep_time = resume_tm_sec - suspend_tm_sec;
 	}
-
-	if (sleep_time < 0) {
-		sleep_time = 0;
-	}
+	suspend_tm_valid = false;
 
 	oplus_chg_soc_update_when_resume(sleep_time);
 	oplus_chg_restart_update_work();
@@ -14998,10 +14966,8 @@ static int smb5_pm_suspend(struct device *dev)
 	 * and soc_down_count accumulation with cached data */
 	oplus_chg_cancel_update_work_sync();
 
-	if (get_current_time(&suspend_tm_sec)) {
-		chg_err("RTC read failed\n");
-		suspend_tm_sec = -1;
-	}
+	suspend_tm_sec = get_current_time();
+	suspend_tm_valid = true;
 
 	return 0;
 }

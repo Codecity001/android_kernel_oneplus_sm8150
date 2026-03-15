@@ -70,6 +70,8 @@
 #ifdef OPLUS_SHA1_HMAC
 #include <linux/random.h>
 #endif
+#include <linux/ktime.h>
+#include <linux/timekeeping.h>
 #include "../oplus_charger.h"
 #include "../oplus_gauge.h"
 #include "../oplus_vooc.h"
@@ -1650,6 +1652,9 @@ static int bq27541_get_battery_soc(void)
 	int ret;
 	int soc = 0;
 	static int soc_store;
+	unsigned long now_sec = (unsigned long)(ktime_get_boottime_ns() /
+					     NSEC_PER_SEC);
+	unsigned long elapsed_sec = 5; /* default = poll interval (seconds) */
 
 	if (!gauge_ic)
 		return 50;
@@ -1706,31 +1711,44 @@ static int bq27541_get_battery_soc(void)
 	 *
 	 * The BQ27541 Impedance Track algorithm can stall under dynamic
 	 * load, then catch up when load changes (e.g. screen off/on),
-	 * creating visible percentage jumps.  Rate-limit SOC drops to
-	 * 1% per polling cycle (5 seconds) regardless of display state.
+	 * creating visible percentage jumps.  Rate-limit SOC drops by
+	 * elapsed real time instead of a fixed jump threshold.
 	 *
 	 * The OOS 11.0.9.1 binary only smoothed on LCD-off, but this
 	 * caused jumps on LCD-on transitions.  Always-on smoothing
 	 * eliminates jumps in all scenarios while maintaining accurate
-	 * long-term tracking (1%/5s = 12%/min >> any real drain rate).
+	 * long-term tracking across real suspend/resume intervals.
 	 */
 	mutex_lock(&gauge_ic->soc_lock);
 	if (gauge_ic->soc_smooth_inited && gauge_ic->soc_pre > 0) {
 		int delta = gauge_ic->soc_pre - soc;
+		int max_drop;
 
-		if (delta > 1 && delta <= 4) {
-			/*
-			 * Small jump (2-4%): gauge catch-up after load change.
-			 * Smooth by 1% per cycle to avoid visible jumps.
-			 */
-			soc = gauge_ic->soc_pre - 1;
-		}
+		if (gauge_ic->last_soc_update_sec &&
+				now_sec >= gauge_ic->last_soc_update_sec)
+			elapsed_sec = now_sec - gauge_ic->last_soc_update_sec;
+		if (elapsed_sec == 0)
+			elapsed_sec = 5; /* default = poll interval */
+
 		/*
-		 * delta <= 1: normal 0-1% drop, use raw value.
-		 * delta > 4: large jump (suspend/recalibration), pass
-		 * through immediately to avoid dangerous lag at low SOC.
+		 * Bound SOC drop by elapsed real time instead of the old
+		 * fixed 4% pass-through threshold.  At the normal 5 s poll
+		 * cadence this keeps the gauge-facing SOC to 1%/sample, but
+		 * after a real suspend (boottime includes sleep) larger
+		 * catch-up is still allowed.
+		 *
+		 * [FIX] Cap max_drop to 1% for moderate jumps (<10%) to
+		 * prevent visible jumps from gauge stalls during active use.
 		 */
+		if (delta <= 10)
+			max_drop = 1;
+		else
+			max_drop = max_t(int, 1, DIV_ROUND_UP(elapsed_sec, 60UL));
+
+		if (delta > max_drop)
+			soc = gauge_ic->soc_pre - max_drop;
 	}
+	gauge_ic->last_soc_update_sec = now_sec;
 	mutex_unlock(&gauge_ic->soc_lock);
 
 	soc = bq27541_soc_calibrate(soc);
@@ -3817,7 +3835,23 @@ static int bq27541_pm_resume(struct device *dev)
 		return 0;
 	}
 	atomic_set(&gauge_ic->suspended, 0);
-	bq27541_get_battery_soc();
+	/*
+	 * Do NOT call bq27541_get_battery_soc() here.
+	 *
+	 * Calling it pre-consumes one Layer-1 smoothing step (delta → delta-1,
+	 * soc_pre advances) before oplus_chg_soc_update_when_resume() gets to
+	 * read the gauge.  That artificially inflates smooth_soc, which reduces
+	 * max_resume_drop and therefore sleep_soc_debt in Layer 3.  In the
+	 * pre-sleep-lag scenario the net result is debt reaching 4 instead of 2,
+	 * and the rapid 4×5s drain looks like a 4% jump to Android's debouncer.
+	 *
+	 * oplus_chg_soc_update_when_resume() (called from smb5_pm_resume, which
+	 * fires shortly after this callback) performs the first authoritative
+	 * post-resume gauge read and is the correct place for SOC accounting.
+	 * The soc_smooth_inited reset in bq27541_pm_suspend() ensures the first
+	 * read in that path calibrates soc_pre directly from the raw gauge value
+	 * (no smoothing filter applied), giving an accurate max_resume_drop.
+	 */
 	return 0;
 }
 
@@ -3826,6 +3860,16 @@ static int bq27541_pm_suspend(struct device *dev)
 	if (!gauge_ic) {
 		return 0;
 	}
+	/*
+	 * Clear soc_smooth_inited so that the first bq27541_get_battery_soc()
+	 * call after resume sets soc_pre directly from the raw RM/FCC value
+	 * (bypassing the smoothing filter).  This prevents the pre-sleep soc_pre
+	 * lag from carrying over into the next wake cycle and inflating
+	 * max_resume_drop beyond the true sleep drain amount.
+	 */
+	mutex_lock(&gauge_ic->soc_lock);
+	gauge_ic->soc_smooth_inited = false;
+	mutex_unlock(&gauge_ic->soc_lock);
 	atomic_set(&gauge_ic->suspended, 1);
 	return 0;
 }
@@ -3842,7 +3886,7 @@ static int bq27541_resume(struct i2c_client *client)
 		return 0;
 	}
 	atomic_set(&gauge_ic->suspended, 0);
-	bq27541_get_battery_soc();
+	/* See comment in bq27541_pm_resume — do not pre-smooth here. */
 	return 0;
 }
 
@@ -3851,6 +3895,10 @@ static int bq27541_suspend(struct i2c_client *client, pm_message_t mesg)
 	if (!gauge_ic) {
 		return 0;
 	}
+	/* See comment in bq27541_pm_suspend — reset smoothing state. */
+	mutex_lock(&gauge_ic->soc_lock);
+	gauge_ic->soc_smooth_inited = false;
+	mutex_unlock(&gauge_ic->soc_lock);
 	atomic_set(&gauge_ic->suspended, 1);
 	return 0;
 }
@@ -3904,6 +3952,7 @@ rerun :
 */
 	fg_ic->soc_pre = 50;
 	fg_ic->soc_smooth_inited = false;
+	fg_ic->last_soc_update_sec = 0;
 	mutex_init(&fg_ic->soc_lock);
 
 	if(fg_ic->batt_bq28z610) {

@@ -600,6 +600,7 @@ struct oplus_chg_chip {
 	int charging_state;
 	int total_time;
 	unsigned long sleep_tm_sec;
+	int sleep_soc_debt;
 	bool vbatt_over;
 	bool chging_over_time;
 	int vchg_status;

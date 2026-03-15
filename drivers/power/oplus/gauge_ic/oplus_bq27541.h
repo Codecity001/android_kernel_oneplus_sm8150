@@ -432,6 +432,7 @@ struct chip_bq27541 {
 	/* Always-on SOC smoothing (reverse-engineered from OOS 11.0.9.1) */
 	bool soc_smooth_inited;     /* true after first successful SOC read */
 	struct mutex soc_lock;      /* protects soc_pre during smooth path */
+	unsigned long last_soc_update_sec;
 	
 	bool battery_full_param;//only for wite battery full param in guage dirver probe on 7250 platform
 	int sha1_key_index;
