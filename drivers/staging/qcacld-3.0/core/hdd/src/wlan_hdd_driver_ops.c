@@ -44,6 +44,7 @@
 #include "wlan_hdd_debugfs.h"
 #include "cfg_ucfg_api.h"
 #include <linux/suspend.h>
+#include <linux/delay.h>
 #include <qdf_notifier.h>
 #include <qdf_hang_event_notifier.h>
 
@@ -1226,6 +1227,7 @@ int wlan_hdd_bus_suspend_noirq(void)
 	void *hif_ctx;
 	int errno;
 	uint32_t pending_events;
+	bool initial_wakeup = false;
 
 	hdd_debug("start bus_suspend_noirq");
 
@@ -1259,6 +1261,7 @@ int wlan_hdd_bus_suspend_noirq(void)
 	errno = ucfg_pmo_psoc_is_target_wake_up_received(hdd_ctx->psoc);
 	if (errno == -EAGAIN) {
 		hdd_err("Firmware attempting wakeup, try again");
+		initial_wakeup = true;
 		wlan_hdd_inc_suspend_stats(hdd_ctx,
 					   SUSPEND_FAIL_INITIAL_WAKEUP);
 	}
@@ -1279,6 +1282,11 @@ int wlan_hdd_bus_suspend_noirq(void)
 	return 0;
 
 resume_hif_noirq:
+	if (initial_wakeup) {
+		int clear_ret = ucfg_pmo_psoc_clear_target_wake_up(hdd_ctx->psoc);
+		if (clear_ret)
+			hdd_err("Failed to clear initial wakeup: %d", clear_ret);
+	}
 	QDF_BUG(!hif_bus_resume_noirq(hif_ctx));
 
 done:
@@ -1771,6 +1779,15 @@ static int wlan_hdd_pld_suspend(struct device *dev,
 		return errno;
 
 	errno = wlan_hdd_bus_suspend();
+	if (errno == -EAGAIN || errno == -EBUSY) {
+		int retry;
+
+		for (retry = 0; retry < 5 && (errno == -EAGAIN || errno == -EBUSY); retry++) {
+			hdd_debug("Suspend busy (%d), retry %d/5", errno, retry + 1);
+			msleep(50);
+			errno = wlan_hdd_bus_suspend();
+		}
+	}
 
 	osif_psoc_sync_op_stop(psoc_sync);
 
