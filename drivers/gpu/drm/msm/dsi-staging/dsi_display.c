@@ -252,7 +252,7 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 	struct dsi_panel *panel;
 	u32 bl_scale, bl_scale_ad;
 	u64 bl_temp;
-	int rc = 0;
+	int rc = 0, post_on_rc = 0;
 	static int gamma_read_flag;
 
 	if (dsi_display == NULL || dsi_display->panel == NULL)
@@ -295,7 +295,6 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 	if (panel->need_power_on_backlight && bl_lvl) {
 		if(cmp_display_panel_name("SOFEF03F_M"))        /*For 19081*/
 			flag_writ = 3;
-		panel->need_power_on_backlight = false;
 		rc = dsi_display_clk_ctrl(dsi_display->dsi_clk_handle,
 			DSI_CORE_CLK, DSI_CLK_ON);
 		if (rc) {
@@ -304,10 +303,19 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 			goto error;
 		}
 
-		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_POST_ON_BACKLIGHT);
+		post_on_rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_POST_ON_BACKLIGHT);
+		if (!post_on_rc)
+			panel->need_power_on_backlight = false;
 
 		rc = dsi_display_clk_ctrl(dsi_display->dsi_clk_handle,
 			DSI_CORE_CLK, DSI_CLK_OFF);
+		if (post_on_rc) {
+			pr_err("[%s] failed to send DSI_CMD_POST_ON_BACKLIGHT cmds, rc=%d\n",
+			       panel->name, post_on_rc);
+			if (!rc)
+				rc = post_on_rc;
+			goto error;
+		}
 		if (rc) {
 			pr_err("[%s] failed to send DSI_CMD_POST_ON_BACKLIGHT cmds, rc=%d\n",
 			       panel->name, rc);
@@ -914,9 +922,8 @@ static int dsi_display_status_check_te(struct dsi_display *display)
 	int rc = 1;
 	int const esd_te_timeout = msecs_to_jiffies(3*20);
 
-	dsi_display_change_te_irq_status(display, true);
-
 	reinit_completion(&display->esd_te_gate);
+	dsi_display_change_te_irq_status(display, true);
 	if (!wait_for_completion_timeout(&display->esd_te_gate,
 				esd_te_timeout)) {
 		pr_err("TE check failed\n");
@@ -3488,8 +3495,14 @@ int dsi_post_clkon_cb(void *priv,
 		 * controller setup is needed if coming out of idle
 		 * power collapse with clamps enabled.
 		 */
-		if (mmss_clamp)
-			dsi_display_ctrl_setup(display);
+		if (mmss_clamp) {
+			rc = dsi_display_ctrl_setup(display);
+			if (rc) {
+				pr_err("%s: controller setup failed, rc=%d\n",
+					__func__, rc);
+				goto error;
+			}
+		}
 
 		/*
 		 * Phy setup is needed if coming out of idle
