@@ -51,6 +51,23 @@ extern ktime_t oplus_backlight_time;
 extern int cmp_display_panel_name(char *istr);
 extern int seed_mode;
 
+static int oplus_panel_tx_hbm_switch_with_te(struct dsi_panel *panel,
+		enum dsi_cmd_set_type first,
+		enum dsi_cmd_set_type second)
+{
+	int rc;
+
+	rc = dsi_panel_tx_cmd_set(panel, first);
+	if (rc)
+		return rc;
+
+	rc = oplus_dsi_display_enable_and_waiting_for_next_te_irq();
+	if (rc)
+		return rc;
+
+	return dsi_panel_tx_cmd_set(panel, second);
+}
+
 static struct oplus_brightness_alpha brightness_seed_alpha_lut_dc[] = {
 	{0, 0xff},
 	{1, 0xfc},
@@ -150,25 +167,33 @@ int oplus_dsi_display_enable_and_waiting_for_next_te_irq(void)
 	SDE_ATRACE_BEGIN("wait_te_irq");
 	/* enable te irq */
 
+	if (!display || !display->panel || !display->panel->cur_mode) {
+		pr_err("invalid display for TE wait\n");
+		SDE_ATRACE_END("wait_te_irq");
+		return -EINVAL;
+	}
+
 	if (display->panel->cur_mode->timing.refresh_rate == 60) {
 		msleep(9);
 	} else if (display->panel->cur_mode->timing.refresh_rate == 90) {
 		msleep(11);
 	}
 
+	display->vsync_switch_pending = true;
+	reinit_completion(&display->switch_te_gate);
 	oplus_dsi_display_change_te_irq_status(display, true);
 	pr_info("Waiting for the next TE to switch\n");
 
-	display->vsync_switch_pending = true;
-	reinit_completion(&display->switch_te_gate);
-
 	if (!wait_for_completion_timeout(&display->switch_te_gate, switch_te_timeout)) {
 		pr_err("hbm vsync switch TE check failed\n");
+		display->vsync_switch_pending = false;
 		oplus_dsi_display_change_te_irq_status(display, false);
+		SDE_ATRACE_END("wait_te_irq");
 		return -EINVAL;
 	}
 	/* disable te irq */
 	oplus_dsi_display_change_te_irq_status(display, false);
+	display->vsync_switch_pending = false;
 	SDE_ATRACE_END("wait_te_irq");
 
 	return 0;
@@ -488,23 +513,31 @@ int sde_connector_update_hbm(struct drm_connector *connector)
 					set_oplus_display_scene(OPLUS_DISPLAY_AOD_SCENE);
 				} else {
 					rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_SET_NOLP);
+					if (!rc)
+						set_oplus_display_scene(OPLUS_DISPLAY_NORMAL_SCENE);
 
 					/* set nolp would exit hbm, restore when panel status on hbm */
-					if(panel->bl_config.bl_level > panel->bl_config.brightness_normal_max_level) {
+					if (!rc &&
+					    panel->bl_config.bl_level > panel->bl_config.brightness_normal_max_level) {
 						if (!strcmp(panel->name, "samsung 20261 ams643ye01 amoled fhd+ panel without DSC") ||
 							!strcmp(panel->name, "samsung 20331 ams643ye01 amoled fhd+ panel without DSC")) {
-							rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER1_SWITCH);
-							oplus_dsi_display_enable_and_waiting_for_next_te_irq();
-							rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER2_SWITCH);
+							ret = oplus_panel_tx_hbm_switch_with_te(panel,
+								DSI_CMD_HBM_ENTER1_SWITCH,
+								DSI_CMD_HBM_ENTER2_SWITCH);
 						} else {
-							rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER_SWITCH);
+							ret = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER_SWITCH);
 						}
+						if (ret && !rc)
+							rc = ret;
 					}
 
-					set_oplus_display_scene(OPLUS_DISPLAY_NORMAL_SCENE);
-					oplus_panel_update_backlight_unlock(panel);
+					ret = oplus_panel_update_backlight_unlock(panel);
+					if (ret && !rc)
+						rc = ret;
 					if (oplus_display_get_hbm_mode()) {
-						rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_AOD_HBM_ON);
+						ret = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_AOD_HBM_ON);
+						if (ret && !rc)
+							rc = ret;
 					}
 				}
 			} else if (oplus_display_get_hbm_mode()) {
@@ -519,14 +552,18 @@ int sde_connector_update_hbm(struct drm_connector *connector)
 				if(panel->bl_config.bl_level > panel->bl_config.brightness_normal_max_level) {
 					if (!strcmp(panel->name, "samsung 20261 ams643ye01 amoled fhd+ panel without DSC") ||
 						!strcmp(panel->name, "samsung 20331 ams643ye01 amoled fhd+ panel without DSC")) {
-						rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER1_SWITCH);
-						oplus_dsi_display_enable_and_waiting_for_next_te_irq();
-						rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER2_SWITCH);
+						ret = oplus_panel_tx_hbm_switch_with_te(panel,
+							DSI_CMD_HBM_ENTER1_SWITCH,
+							DSI_CMD_HBM_ENTER2_SWITCH);
 					} else {
-						rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER_SWITCH);
+						ret = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER_SWITCH);
 					}
+					if (ret && !rc)
+						rc = ret;
 				}
-				dsi_panel_set_backlight(panel, panel->bl_config.bl_level);
+				ret = dsi_panel_set_backlight(panel, panel->bl_config.bl_level);
+				if (ret && !rc)
+					rc = ret;
 			}
 
 			dsi_display_clk_ctrl(dsi_display->dsi_clk_handle,

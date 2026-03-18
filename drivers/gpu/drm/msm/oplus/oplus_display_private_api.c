@@ -2390,27 +2390,34 @@ int dsi_display_oplus_set_power(struct drm_connector *connector,
 	int rc = 0;
 	struct msm_drm_notifier notifier_data;
 	int blank;
+	enum oplus_display_scene scene;
+	bool send_blank_event = false;
 
 	if (!display || !display->panel) {
 		pr_err("invalid display/panel\n");
 		return -EINVAL;
 	}
 
+	scene = get_oplus_display_scene();
+
 	switch (power_mode) {
 	case SDE_MODE_DPMS_LP1:
 	case SDE_MODE_DPMS_LP2:
-		switch(get_oplus_display_scene()) {
+		switch (scene) {
 			break;
 		case OPLUS_DISPLAY_NORMAL_SCENE:
 		case OPLUS_DISPLAY_NORMAL_HBM_SCENE:
 			rc = dsi_panel_set_lp1(display->panel);
-			rc = dsi_panel_set_lp2(display->panel);
-			set_oplus_display_scene(OPLUS_DISPLAY_AOD_SCENE);
+			if (!rc)
+				rc = dsi_panel_set_lp2(display->panel);
+			if (!rc)
+				set_oplus_display_scene(OPLUS_DISPLAY_AOD_SCENE);
 			break;
 		case OPLUS_DISPLAY_AOD_HBM_SCENE:
 			blank = MSM_DRM_BLANK_POWERDOWN;
 			notifier_data.data = &blank;
 			notifier_data.id = 0;
+			send_blank_event = true;
 
 			msm_drm_notifier_call_chain(MSM_DRM_EARLY_EVENT_BLANK,
 						    &notifier_data);
@@ -2420,43 +2427,54 @@ int dsi_display_oplus_set_power(struct drm_connector *connector,
 				mutex_lock(&display->panel->panel_lock);
 				rc = dsi_panel_tx_cmd_set(display->panel, DSI_CMD_AOD_HBM_OFF);
 				mutex_unlock(&display->panel->panel_lock);
-				set_oplus_display_scene(OPLUS_DISPLAY_AOD_SCENE);
+				if (!rc)
+					set_oplus_display_scene(OPLUS_DISPLAY_AOD_SCENE);
 			}
-
-			msm_drm_notifier_call_chain(MSM_DRM_EVENT_BLANK,
-						    &notifier_data);
 			break;
 		case OPLUS_DISPLAY_AOD_SCENE:
 		default:
 			break;
 		}
-		set_oplus_display_power_status(OPLUS_DISPLAY_POWER_DOZE_SUSPEND);
+		if (!rc) {
+			set_oplus_display_power_status(OPLUS_DISPLAY_POWER_DOZE_SUSPEND);
+			if (send_blank_event)
+				msm_drm_notifier_call_chain(MSM_DRM_EVENT_BLANK,
+							    &notifier_data);
+		}
 		break;
 	case SDE_MODE_DPMS_ON:
 		blank = MSM_DRM_BLANK_UNBLANK;
 		notifier_data.data = &blank;
 		notifier_data.id = 0;
+		send_blank_event = true;
 		msm_drm_notifier_call_chain(MSM_DRM_EARLY_EVENT_BLANK,
 					   &notifier_data);
-		if(OPLUS_DISPLAY_AOD_SCENE == get_oplus_display_scene()) {
+		if (scene == OPLUS_DISPLAY_AOD_SCENE) {
 			if (sde_connector_get_fp_mode(connector)) {
 				mutex_lock(&display->panel->panel_lock);
 				rc = dsi_panel_tx_cmd_set(display->panel, DSI_CMD_AOD_HBM_ON);
 				mutex_unlock(&display->panel->panel_lock);
-				set_oplus_display_scene(OPLUS_DISPLAY_AOD_HBM_SCENE);
+				if (!rc)
+					set_oplus_display_scene(OPLUS_DISPLAY_AOD_HBM_SCENE);
 
 			} else {
-				set_oplus_display_scene(OPLUS_DISPLAY_NORMAL_SCENE);
 				rc = dsi_panel_set_nolp(display->panel);
 			}
+		} else if (!sde_connector_get_fp_mode(connector) &&
+			   (display->panel->power_mode == SDE_MODE_DPMS_LP1 ||
+			    display->panel->power_mode == SDE_MODE_DPMS_LP2)) {
+			rc = dsi_panel_set_nolp(display->panel);
 		}
 
-		oplus_dsi_update_seed_mode();
-		oplus_display_update_osc_clk();
-		set_oplus_display_power_status(OPLUS_DISPLAY_POWER_ON);
-		msm_drm_notifier_call_chain(MSM_DRM_EVENT_BLANK,
-			&notifier_data);
-		osc_count = 1;
+		if (!rc) {
+			oplus_dsi_update_seed_mode();
+			oplus_display_update_osc_clk();
+			set_oplus_display_power_status(OPLUS_DISPLAY_POWER_ON);
+			if (send_blank_event)
+				msm_drm_notifier_call_chain(MSM_DRM_EVENT_BLANK,
+					&notifier_data);
+			osc_count = 1;
+		}
 		break;
 	case SDE_MODE_DPMS_OFF:
 		osc_count = 0;
