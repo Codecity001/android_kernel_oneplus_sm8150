@@ -960,6 +960,23 @@ int dsi_panel_gamma_read_address_setting(struct dsi_panel *panel, u16 read_numbe
 #ifdef OPLUS_BUG_STABILITY
 extern int oplus_display_get_hbm_mode(void);
 extern int power_change_update_backlight;
+
+static int dsi_panel_tx_hbm_switch_with_te(struct dsi_panel *panel,
+		enum dsi_cmd_set_type first,
+		enum dsi_cmd_set_type second)
+{
+	int rc;
+
+	rc = dsi_panel_tx_cmd_set(panel, first);
+	if (rc)
+		return rc;
+
+	rc = oplus_dsi_display_enable_and_waiting_for_next_te_irq();
+	if (rc)
+		return rc;
+
+	return dsi_panel_tx_cmd_set(panel, second);
+}
 #endif /* OPLUS_BUG_STABILITY */
 
 static int dsi_panel_update_backlight(struct dsi_panel *panel,
@@ -1026,14 +1043,14 @@ static int dsi_panel_update_backlight(struct dsi_panel *panel,
 				bl_lvl = 2064;
 			}
 			if ((bl_lvl > panel->bl_config.bl_normal_max_level)&&(oplus_last_backlight <= panel->bl_config.bl_normal_max_level)) {
-				rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER1_SWITCH);
-				oplus_dsi_display_enable_and_waiting_for_next_te_irq();
-				rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER2_SWITCH);
+				rc = dsi_panel_tx_hbm_switch_with_te(panel,
+					DSI_CMD_HBM_ENTER1_SWITCH,
+					DSI_CMD_HBM_ENTER2_SWITCH);
 			}
 			else if((bl_lvl <= panel->bl_config.bl_normal_max_level)&&(oplus_last_backlight > panel->bl_config.bl_normal_max_level)) {
-				rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_EXIT1_SWITCH);
-				oplus_dsi_display_enable_and_waiting_for_next_te_irq();
-				rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_EXIT2_SWITCH);
+				rc = dsi_panel_tx_hbm_switch_with_te(panel,
+					DSI_CMD_HBM_EXIT1_SWITCH,
+					DSI_CMD_HBM_EXIT2_SWITCH);
 			}
 			if (rc)
 				pr_err("[%s] failed to send DSI_CMD_HBM cmds, rc=%d\n", panel->name, rc);
@@ -4583,9 +4600,11 @@ int dsi_panel_set_lp1(struct dsi_panel *panel)
 		pr_err("[%s] failed to send DSI_CMD_SET_LP1 cmd, rc=%d\n",
 		       panel->name, rc);
 #ifdef OPLUS_BUG_STABILITY
-	oplus_update_aod_light_mode_unlock(panel);
-	panel->need_power_on_backlight = true;
-	set_oplus_display_power_status(OPLUS_DISPLAY_POWER_DOZE);
+	if (!rc) {
+		oplus_update_aod_light_mode_unlock(panel);
+		panel->need_power_on_backlight = true;
+		set_oplus_display_power_status(OPLUS_DISPLAY_POWER_DOZE);
+	}
 #endif /* OPLUS_BUG_STABILITY */
 exit:
 	mutex_unlock(&panel->panel_lock);
@@ -4610,7 +4629,8 @@ int dsi_panel_set_lp2(struct dsi_panel *panel)
 		pr_err("[%s] failed to send DSI_CMD_SET_LP2 cmd, rc=%d\n",
 		       panel->name, rc);
 #ifdef OPLUS_BUG_STABILITY
-	set_oplus_display_power_status(OPLUS_DISPLAY_POWER_DOZE_SUSPEND);
+	if (!rc)
+		set_oplus_display_power_status(OPLUS_DISPLAY_POWER_DOZE_SUSPEND);
 #endif /* OPLUS_BUG_STABILITY */
 exit:
 	mutex_unlock(&panel->panel_lock);
@@ -4619,7 +4639,11 @@ exit:
 
 int dsi_panel_set_nolp(struct dsi_panel *panel)
 {
-	int rc = 0;
+	int rc = 0, ret = 0;
+	bool nolp_switched = false;
+#ifdef OPLUS_BUG_STABILITY
+	enum oplus_display_scene scene;
+#endif
 
 	if (!panel) {
 		pr_err("invalid params\n");
@@ -4642,21 +4666,45 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 	if (rc)
 		pr_err("[%s] failed to send DSI_CMD_SET_NOLP cmd, rc=%d\n",
 		       panel->name, rc);
-
-	if (panel->bl_config.bl_level > panel->bl_config.brightness_normal_max_level) {
-		if (!strcmp(panel->name,"samsung 20261 ams643ye01 amoled fhd+ panel without DSC") ||
-			!strcmp(panel->name,"samsung 20331 ams643ye01 amoled fhd+ panel without DSC")) {
-			rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER1_SWITCH);
-			oplus_dsi_display_enable_and_waiting_for_next_te_irq();
-			rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER2_SWITCH);
-		} else {
-			rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER_SWITCH);
-		}
-	}
-	oplus_panel_update_backlight_unlock(panel);
+	else
+		nolp_switched = true;
 
 #ifdef OPLUS_BUG_STABILITY
-	set_oplus_display_power_status(OPLUS_DISPLAY_POWER_ON);
+	if (nolp_switched) {
+		scene = get_oplus_display_scene();
+		if (scene == OPLUS_DISPLAY_AOD_SCENE ||
+		    scene == OPLUS_DISPLAY_AOD_HBM_SCENE)
+			set_oplus_display_scene(OPLUS_DISPLAY_NORMAL_SCENE);
+	}
+#endif
+
+	if (nolp_switched &&
+	    panel->bl_config.bl_level > panel->bl_config.brightness_normal_max_level) {
+		if (!strcmp(panel->name,"samsung 20261 ams643ye01 amoled fhd+ panel without DSC") ||
+			!strcmp(panel->name,"samsung 20331 ams643ye01 amoled fhd+ panel without DSC")) {
+			ret = dsi_panel_tx_hbm_switch_with_te(panel,
+				DSI_CMD_HBM_ENTER1_SWITCH,
+				DSI_CMD_HBM_ENTER2_SWITCH);
+		} else {
+			ret = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER_SWITCH);
+		}
+		if (ret && !rc)
+			rc = ret;
+	}
+
+	if (nolp_switched) {
+		ret = oplus_panel_update_backlight_unlock(panel);
+		if (ret) {
+			pr_err("[%s] failed to restore backlight after NOLP, rc=%d\n",
+			       panel->name, ret);
+			if (!rc)
+				rc = ret;
+		}
+	}
+
+#ifdef OPLUS_BUG_STABILITY
+	if (!rc)
+		set_oplus_display_power_status(OPLUS_DISPLAY_POWER_ON);
 #endif /* OPLUS_BUG_STABILITY */
 exit:
 	mutex_unlock(&panel->panel_lock);
@@ -4989,7 +5037,7 @@ int dsi_panel_post_switch(struct dsi_panel *panel)
 
 int dsi_panel_enable(struct dsi_panel *panel)
 {
-	int rc = 0;
+	int rc = 0, ret = 0;
 	int hbm_mode = oplus_display_get_hbm_mode();
 
 	if (!panel) {
@@ -5003,35 +5051,42 @@ int dsi_panel_enable(struct dsi_panel *panel)
 	if (rc)
 		pr_err("[%s] failed to send DSI_CMD_SET_ON cmds, rc=%d\n",
 		       panel->name, rc);
-	else
+	else {
 		panel->panel_initialized = true;
-
-	if (hbm_mode) {
-		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_OFF);
-		if (rc)
-			pr_err("[%s] failed to send DSI_CMD_HBM_OFF cmds, rc=%d\n",
-				panel->name, rc);
+		panel->need_power_on_backlight = true;
+		if ((strcmp(panel->name, "samsung dsc cmd mode oneplus dsi panel") == 0) &&
+		    (gamma_read_flag == GAMMA_READ_SUCCESS) && mode_fps == 60) {
+			ret = dsi_panel_tx_gamma_cmd_set(panel,
+				DSI_GAMMA_CMD_SET_SWITCH_60HZ);
+			pr_debug("Send DSI_GAMMA_CMD_SET_SWITCH_60HZ cmds\n");
+			if (ret) {
+				pr_err("[%s] Failed to send DSI_GAMMA_CMD_SET_SWITCH_60HZ cmds, rc=%d\n",
+				       panel->name, ret);
+				if (!rc)
+					rc = ret;
+			}
+		}
+		set_oplus_display_power_status(OPLUS_DISPLAY_POWER_ON);
 	}
 
-//#ifdef OPLUS_BUG_STABILITY
-	panel->need_power_on_backlight = true;
-        if ((strcmp(panel->name, "samsung dsc cmd mode oneplus dsi panel") == 0) && (gamma_read_flag == GAMMA_READ_SUCCESS)) {
-		if (mode_fps == 60) {
-			rc = dsi_panel_tx_gamma_cmd_set(panel, DSI_GAMMA_CMD_SET_SWITCH_60HZ);
-			pr_debug("Send DSI_GAMMA_CMD_SET_SWITCH_60HZ cmds\n");
-			if (rc)
-				pr_err("[%s] Failed to send DSI_GAMMA_CMD_SET_SWITCH_60HZ cmds, rc=%d\n",
-					panel->name, rc);
+	if (panel->panel_initialized && hbm_mode) {
+		ret = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_OFF);
+		if (ret) {
+			pr_err("[%s] failed to send DSI_CMD_HBM_OFF cmds, rc=%d\n",
+			       panel->name, ret);
+			if (!rc)
+				rc = ret;
 		}
 	}
-	set_oplus_display_power_status(OPLUS_DISPLAY_POWER_ON);
-//#endif /* OPLUS_BUG_STABILITY */
 
-	if (hbm_mode) {
-		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ON);
-		if (rc)
+	if (panel->panel_initialized && hbm_mode) {
+		ret = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ON);
+		if (ret) {
 			pr_err("[%s] failed to send DSI_CMD_HBM_ON cmds, rc=%d\n",
-				panel->name, rc);
+			       panel->name, ret);
+			if (!rc)
+				rc = ret;
+		}
 	}
 
 	mutex_unlock(&panel->panel_lock);
