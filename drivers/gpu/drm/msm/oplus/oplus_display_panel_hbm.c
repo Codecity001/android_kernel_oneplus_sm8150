@@ -73,7 +73,7 @@ error:
 
 int dsi_panel_hbm_off(struct dsi_panel *panel)
 {
-	int rc = 0;
+	int rc = 0, ret = 0;
 
 	if (!panel) {
 		pr_err("Invalid params\n");
@@ -99,8 +99,13 @@ int dsi_panel_hbm_off(struct dsi_panel *panel)
 		if (!strcmp(panel->name, "samsung 20261 ams643ye01 amoled fhd+ panel without DSC") ||
 			!strcmp(panel->name, "samsung 20331 ams643ye01 amoled fhd+ panel without DSC")) {
 			rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER1_SWITCH);
-			oplus_dsi_display_enable_and_waiting_for_next_te_irq();
-			rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER2_SWITCH);
+			if (!rc) {
+				ret = oplus_dsi_display_enable_and_waiting_for_next_te_irq();
+				if (ret && !rc)
+					rc = ret;
+			}
+			if (!rc)
+				rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER2_SWITCH);
 		} else {
 			rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_HBM_ENTER_SWITCH);
 		}
