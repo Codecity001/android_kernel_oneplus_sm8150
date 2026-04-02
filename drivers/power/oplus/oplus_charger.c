@@ -4685,9 +4685,11 @@ static int fb_notifier_callback(struct notifier_block *nb,
 		if (blank == MSM_DRM_BLANK_UNBLANK) {
 			g_charger_chip->led_on = true;
 			g_charger_chip->led_on_change = true;
+			oplus_gauge_set_lcd_off_status(0);
 		} else if (blank == MSM_DRM_BLANK_POWERDOWN) {
 			g_charger_chip->led_on = false;
 			g_charger_chip->led_on_change = true;
+			oplus_gauge_set_lcd_off_status(1);
 		} else {
 			pr_err("%s: receives wrong data EARLY_BLANK:%d\n", __func__, blank);
 		}
@@ -6269,8 +6271,7 @@ static void oplus_chg_update_ui_soc(struct oplus_chg_chip *chip)
 	static int cnt = 0;
 	int soc_down_limit = 0;
 	int soc_up_limit = 0;
-	unsigned long sleep_tm = 0;
-	unsigned long soc_reduce_margin = 0;
+	int soc_reduce_margin = 0;
 	bool vbatt_too_low = false;
 	vbatt_lowerthan_3300mv = false;
 
@@ -6391,24 +6392,20 @@ static void oplus_chg_update_ui_soc(struct oplus_chg_chip *chip)
 			} else {
 				soc_down_count++;
 			}
-			sleep_tm = chip->sleep_tm_sec;
 			if (chip->sleep_tm_sec > 0) {
-				soc_reduce_margin = chip->sleep_tm_sec / TEN_MINUTES;
+				soc_reduce_margin = (int)(chip->sleep_tm_sec / TEN_MINUTES);
+				if (soc_reduce_margin > chip->ui_soc)
+					soc_reduce_margin = chip->ui_soc;
 				if (soc_reduce_margin == 0) {
 					if ((chip->ui_soc - chip->smooth_soc) > 2) {
 						chip->ui_soc--;
 						soc_down_count = 0;
-						chip->sleep_tm_sec = 0;
 					}
-				} else if (soc_reduce_margin < (chip->ui_soc - chip->smooth_soc)) {
-					chip->ui_soc -= soc_reduce_margin;
+				} else if (chip->ui_soc > chip->smooth_soc) {
+					chip->ui_soc--;
 					soc_down_count = 0;
-					chip->sleep_tm_sec = 0;
-				} else if (soc_reduce_margin >= (chip->ui_soc - chip->smooth_soc)) {
-					chip->ui_soc = chip->smooth_soc;
-					soc_down_count = 0;
-					chip->sleep_tm_sec = 0;
 				}
+				chip->sleep_tm_sec = 0;
 			}
 			if (soc_down_count >= soc_down_limit && (chip->smooth_soc < chip->ui_soc || vbatt_too_low)) {
 				chip->sleep_tm_sec = 0;
