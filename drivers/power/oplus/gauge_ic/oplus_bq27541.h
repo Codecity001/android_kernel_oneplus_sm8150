@@ -428,6 +428,10 @@ struct chip_bq27541 {
 
 	bool modify_soc_smooth;
 	bool modify_soc_calibration;
+
+	/* LCD-off-only SOC smoothing */
+	bool smooth_flag;
+	struct mutex soc_lock;
 	
 	bool battery_full_param;//only for wite battery full param in guage dirver probe on 7250 platform
 	int sha1_key_index;

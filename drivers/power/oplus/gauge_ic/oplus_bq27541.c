@@ -843,26 +843,13 @@ static int bq27541_get_battery_soh(void)	/*  sjc20150105  */
 
 static int bq27541_soc_calibrate(int soc)
 {
-	unsigned int soc_calib;
-	/*int counter_temp = 0; */
-/*
-	if (!gauge_ic->batt_psy) {
-		gauge_ic->batt_psy = power_supply_get_by_name("battery");
-		gauge_ic->soc_pre = soc;
-	}
-*/
-	if (!gauge_ic) {
+	if (soc >= 100) {
+		return 100;
+	} else if (soc < 0) {
 		return 0;
 	}
-	soc_calib = soc;
-	if (soc >= 100) {
-		soc_calib = 100;
-	} else if (soc < 0) {
-		soc_calib = 0;
-	}
-	gauge_ic->soc_pre = soc_calib;
-	/*pr_info("soc:%d, soc_calib:%d\n", soc, soc_calib); */
-	return soc_calib;
+
+	return soc;
 }
 
 /*
@@ -1648,6 +1635,7 @@ static int bq27541_get_battery_soc(void)
 {
 	int ret;
 	int soc = 0;
+	static int soc_store;
 
 	if (!gauge_ic) {
 		return 50;
@@ -1656,10 +1644,26 @@ static int bq27541_get_battery_soc(void)
 		return gauge_ic->soc_pre;
 	}
 	if (oplus_vooc_get_allow_reading() == true) {
-		ret = bq27541_read_i2c(gauge_ic->cmd_addr.reg_soc, &soc);
-		if (ret) {
-			dev_err(gauge_ic->dev, "error reading soc.ret:%d\n", ret);
-			goto read_soc_err;
+		int rm = 0;
+		int fcc = 0;
+		int ret_rm;
+		int ret_fcc;
+
+		ret_rm = bq27541_read_i2c(gauge_ic->cmd_addr.reg_rm, &rm);
+		ret_fcc = bq27541_read_i2c(gauge_ic->cmd_addr.reg_fcc, &fcc);
+		if (ret_rm == 0 && ret_fcc == 0 && fcc > 100) {
+			soc = DIV_ROUND_CLOSEST(rm * 100, fcc);
+			if (soc > 100) {
+				soc = 100;
+			} else if (soc < 0) {
+				soc = 0;
+			}
+		} else {
+			ret = bq27541_read_i2c(gauge_ic->cmd_addr.reg_soc, &soc);
+			if (ret) {
+				dev_err(gauge_ic->dev, "error reading soc.ret:%d\n", ret);
+				goto read_soc_err;
+			}
 		}
 	} else {
 		if (gauge_ic->soc_pre) {
@@ -1668,7 +1672,25 @@ static int bq27541_get_battery_soc(void)
 			return 0;
 		}
 	}
+
+	if (soc_store != soc) {
+		pr_info("BQ: bq27541_battery_soc = %d\n", soc);
+		soc_store = soc;
+	}
+
+	mutex_lock(&gauge_ic->soc_lock);
+	if (gauge_ic->smooth_flag && gauge_ic->soc_pre > 0) {
+		int delta = gauge_ic->soc_pre - soc;
+
+		if (delta > 0) {
+			soc = gauge_ic->soc_pre - 1;
+		}
+	}
+
 	soc = bq27541_soc_calibrate(soc);
+	gauge_ic->soc_pre = soc;
+	mutex_unlock(&gauge_ic->soc_lock);
+
 	return soc;
 
 read_soc_err:
@@ -1677,6 +1699,21 @@ read_soc_err:
 	} else {
 		return 0;
 	}
+}
+
+static int bq27541_set_lcd_off_status(int lcd_off)
+{
+	if (!gauge_ic) {
+		return 0;
+	}
+
+	pr_info("BQ: %s: smooth_flag=%d\n", __func__, lcd_off);
+
+	mutex_lock(&gauge_ic->soc_lock);
+	gauge_ic->smooth_flag = !!lcd_off;
+	mutex_unlock(&gauge_ic->soc_lock);
+
+	return 0;
 }
 
 static int bq27541_get_average_current(void)
@@ -1877,6 +1914,7 @@ static struct oplus_gauge_operations bq27541_gauge_ops = {
 	.clear_gauge_i2c_err = bq27541_clear_gauge_i2c_err,
 	.protect_check = zy0603_protect_check,
 	.afi_update_done = zy0603_afi_update_done,
+	.set_lcd_off_status = bq27541_set_lcd_off_status,
 };
 
 static void gauge_set_cmd_addr(struct chip_bq27541 *chip, int device_type)
@@ -3839,6 +3877,8 @@ rerun :
 	schedule_delayed_work(&fg_ic->hw_config, 0);
 */
 	fg_ic->soc_pre = 50;
+	fg_ic->smooth_flag = false;
+	mutex_init(&fg_ic->soc_lock);
 	if(fg_ic->batt_bq28z610) {
 		fg_ic->batt_vol_pre = 3800;
 		fg_ic->fc_pre = 0;
