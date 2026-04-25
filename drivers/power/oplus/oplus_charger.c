@@ -6261,9 +6261,8 @@ static void oplus_chg_update_ui_soc(struct oplus_chg_chip *chip)
 	static int cnt = 0;
 	int soc_down_limit = 0;
 	int soc_up_limit = 0;
-	unsigned long sleep_tm = 0;
-	unsigned long soc_reduce_margin = 0;
 	bool vbatt_too_low = false;
+	bool slept_long = false;
 	vbatt_lowerthan_3300mv = false;
 
 	if (chip->ui_soc == 100) {
@@ -6383,31 +6382,29 @@ static void oplus_chg_update_ui_soc(struct oplus_chg_chip *chip)
 			} else {
 				soc_down_count++;
 			}
-			sleep_tm = chip->sleep_tm_sec;
 			if (chip->sleep_tm_sec > 0) {
-				soc_reduce_margin = chip->sleep_tm_sec / TEN_MINUTES;
-				if (soc_reduce_margin == 0) {
+				slept_long = chip->sleep_tm_sec >= TEN_MINUTES;
+				if (!slept_long) {
 					if ((chip->ui_soc - chip->smooth_soc) > 2) {
 						chip->ui_soc--;
 						soc_down_count = 0;
-						chip->sleep_tm_sec = 0;
 					}
-				} else if (soc_reduce_margin < (chip->ui_soc - chip->smooth_soc)) {
-					chip->ui_soc -= soc_reduce_margin;
+				} else if (chip->ui_soc > chip->smooth_soc) {
+					chip->ui_soc--;
 					soc_down_count = 0;
-					chip->sleep_tm_sec = 0;
-				} else if (soc_reduce_margin >= (chip->ui_soc - chip->smooth_soc)) {
-					chip->ui_soc = chip->smooth_soc;
-					soc_down_count = 0;
-					chip->sleep_tm_sec = 0;
 				}
 			}
 			if (soc_down_count >= soc_down_limit && (chip->smooth_soc < chip->ui_soc || vbatt_too_low)) {
-				chip->sleep_tm_sec = 0;
 				soc_down_count = 0;
 				chip->ui_soc--;
 			}
 		}
+		/*
+		 * The sleep window is owned by a single periodic update cycle.
+		 * Consume it here unconditionally so it cannot leak into the
+		 * next cycle when smooth_soc > ui_soc on the discharge path.
+		 */
+		chip->sleep_tm_sec = 0;
 	}
 	if (chip->ui_soc < 2) {
 		cnt = 0;
@@ -7869,18 +7866,26 @@ int oplus_chg_get_soc(void)
 void oplus_chg_soc_update_when_resume(unsigned long sleep_tm_sec)
 {
 	int new_soc;
-	if (!g_charger_chip) {
+
+	if (!g_charger_chip)
+		return;
+
+	g_charger_chip->sleep_tm_sec = sleep_tm_sec;
+
+	new_soc = oplus_gauge_get_batt_soc();
+	if (new_soc < 0 || new_soc > 100) {
+		/*
+		 * Gauge returned a bogus reading. Keep the pre-suspend
+		 * soc/smooth_soc snapshot intact, but still run UI smoothing
+		 * so the freshly-stored sleep window is consumed instead of
+		 * leaking into the next normal update cycle.
+		 */
+		oplus_chg_update_ui_soc(g_charger_chip);
 		return;
 	}
-	g_charger_chip->sleep_tm_sec = sleep_tm_sec;
-	new_soc = oplus_gauge_get_batt_soc();
-	if(new_soc != g_charger_chip->soc){
-		g_charger_chip->smooth_soc -= (g_charger_chip->soc - new_soc);
-	}
+
 	g_charger_chip->soc = new_soc;
-	if(g_charger_chip->smooth_switch){
-		oplus_chg_smooth_to_soc(g_charger_chip);
-	}
+	g_charger_chip->smooth_soc = new_soc;
 	oplus_chg_update_ui_soc(g_charger_chip);
 }
 
