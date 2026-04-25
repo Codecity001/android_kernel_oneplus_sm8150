@@ -6181,6 +6181,17 @@ static bool oplus_chg_soc_reduce_slow_when_1(struct oplus_chg_chip *chip)
 #define CHARGING_STATUS  1
 #define DISCHARGING_STATUS  0
 
+static int oplus_chg_smooth_diff(int capacity, int divisor)
+{
+	int diff;
+
+	if (capacity <= 0 || divisor <= 0)
+		return 1;
+
+	diff = capacity / divisor;
+	return diff > 0 ? diff : 1;
+}
+
 static void oplus_chg_smooth_to_soc(struct oplus_chg_chip *chip)
 {
 	static int time = 0;
@@ -6196,7 +6207,8 @@ static void oplus_chg_smooth_to_soc(struct oplus_chg_chip *chip)
 		time = 0;
 		capacity = chip->batt_rm;
 		soc_pre = chip->soc;
-		smooth_diff = capacity/(2 * chip->soc - chip->smooth_soc);
+		smooth_diff = oplus_chg_smooth_diff(capacity,
+				2 * chip->soc - chip->smooth_soc);
 	} else if(!(chip->charger_exist && chip->batt_exist
 			&& chip->mmi_chg && (chip->batt_full || CHARGING_STATUS_FAIL != chip->charging_state)
 			&& (chip->stop_chg == 1 || chip->charger_type == 5)) && status == CHARGING_STATUS){
@@ -6216,12 +6228,15 @@ static void oplus_chg_smooth_to_soc(struct oplus_chg_chip *chip)
 						time = 0;
 						capacity = chip->batt_rm;
 						soc_pre = chip->soc;
-						smooth_diff = capacity/chip->smooth_soc;
+						smooth_diff = oplus_chg_smooth_diff(capacity,
+								chip->smooth_soc);
 					}
 					if((capacity - chip->batt_rm) >= smooth_diff || ((chip->smooth_soc - chip->soc) > chip->smooth_to_soc_gap)){
 							chip->smooth_soc--;
 							capacity = chip->batt_rm;
-							smooth_diff = capacity/chip->smooth_soc;
+							smooth_diff =
+								oplus_chg_smooth_diff(capacity,
+										chip->smooth_soc);
 					}
 					if(chip->soc == 0 ){
 						time++;
@@ -6241,7 +6256,8 @@ static void oplus_chg_smooth_to_soc(struct oplus_chg_chip *chip)
 					chip->smooth_soc++;
 					capacity = chip->batt_rm;
 					soc_pre = chip->soc;
-					smooth_diff = capacity/(2 * chip->soc - chip->smooth_soc);
+					smooth_diff = oplus_chg_smooth_diff(capacity,
+							2 * chip->soc - chip->smooth_soc);
 			}
 			if(chip->soc < soc_pre){
 				chip->smooth_soc--;
