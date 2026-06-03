@@ -9,6 +9,7 @@
 #include <linux/atomic.h>
 #include <linux/cgroup.h>
 #include <linux/filter.h>
+#include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/sysctl.h>
 #include <linux/string.h>
@@ -1325,7 +1326,7 @@ int __cgroup_bpf_run_filter_sysctl(struct ctl_table_header *head,
 	kfree(ctx.cur_val);
 
 	if (ret == 1 && ctx.new_updated) {
-		kfree(*buf);
+		kvfree(*buf);
 		*buf = ctx.new_val;
 		*pcount = ctx.new_len;
 	} else {
