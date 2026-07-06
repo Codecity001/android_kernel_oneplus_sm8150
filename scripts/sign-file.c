@@ -124,7 +124,7 @@ static EVP_PKEY *read_private_key(const char *private_key_name)
 	EVP_PKEY *private_key;
 	BIO *b;
 
-#ifndef OPENSSL_NO_ENGINE
+#if !defined(OPENSSL_NO_ENGINE) && !defined(OPENSSL_IS_BORINGSSL)
 	if (!strncmp(private_key_name, "pkcs11:", 7)) {
 		ENGINE *e;
 
