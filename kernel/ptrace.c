@@ -8,6 +8,7 @@
  */
 
 #include <linux/capability.h>
+#include <linux/cred.h>
 #include <linux/export.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
@@ -239,7 +240,13 @@ static void ptrace_unfreeze_traced(struct task_struct *task)
 static int ptrace_check_attach(struct task_struct *child, bool ignore_state)
 {
 	int ret = -ESRCH;
-	child->ptrace_message = 0;
+
+	/* Keep the anti-detection reset for app tracers, but do not break
+	 * PTRACE_GETEVENTMSG for root tracers (crash_dump reads the pid of
+	 * its freshly cloned dump child through it).
+	 */
+	if (current_uid().val != 0)
+		child->ptrace_message = 0;
 
 	/*
 	 * We take the read lock around doing both checks to close a
