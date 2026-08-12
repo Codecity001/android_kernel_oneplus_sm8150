@@ -3101,7 +3101,14 @@ static int binder_proc_transaction(struct binder_transaction *t,
 		t_outdated->buffer = NULL;
 		buffer->transaction = NULL;
 		trace_binder_transaction_update_buffer_release(buffer);
-		binder_transaction_buffer_release(proc, buffer, 0, 0);
+		/*
+		 * The fds of the outdated transaction were installed into the
+		 * frozen target at send time and it will never receive them,
+		 * so release the buffer as on a failed send to close them.
+		 */
+		binder_transaction_buffer_release(proc, buffer,
+				ALIGN(buffer->data_size, sizeof(void *)) +
+				buffer->offsets_size, true);
 		binder_alloc_free_buf(&proc->alloc, buffer);
 		kfree(t_outdated);
 		binder_stats_deleted(BINDER_STAT_TRANSACTION);
