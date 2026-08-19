@@ -21,6 +21,7 @@
 #include <linux/ptrace.h>
 #include <linux/security.h>
 #include <linux/signal.h>
+#include <linux/string.h>
 #include <linux/uio.h>
 #include <linux/audit.h>
 #include <linux/pid_namespace.h>
@@ -237,15 +238,40 @@ static void ptrace_unfreeze_traced(struct task_struct *task)
  * RETURNS:
  * 0 on success, -ESRCH if %child is not ready.
  */
+static u32 crash_dump_sid;
+
+/*
+ * Anti-detection hardening: app tracers must not learn the payload of
+ * ptrace events (e.g. the child pid behind PTRACE_EVENT_CLONE), so their
+ * reads go through ptrace_check_attach() where ptrace_message is zeroed.
+ * Do not hide it from root tracers or from crash_dump, whose vm-process
+ * protocol depends on PTRACE_GETEVENTMSG; crash_dump always runs in the
+ * crash_dump SELinux domain regardless of the crashing process's uid,
+ * and apps cannot enter that domain.
+ */
+static bool ptrace_message_hidden(void)
+{
+	u32 secid;
+
+	if (current_uid().val == 0)
+		return false;
+
+	if (unlikely(!crash_dump_sid)) {
+		const char *ctx = "u:r:crash_dump:s0";
+
+		if (security_secctx_to_secid(ctx, strlen(ctx), &crash_dump_sid))
+			return true;
+	}
+
+	security_task_getsecid(current, &secid);
+	return secid != crash_dump_sid;
+}
+
 static int ptrace_check_attach(struct task_struct *child, bool ignore_state)
 {
 	int ret = -ESRCH;
 
-	/* Keep the anti-detection reset for app tracers, but do not break
-	 * PTRACE_GETEVENTMSG for root tracers (crash_dump reads the pid of
-	 * its freshly cloned dump child through it).
-	 */
-	if (current_uid().val != 0)
+	if (ptrace_message_hidden())
 		child->ptrace_message = 0;
 
 	/*
