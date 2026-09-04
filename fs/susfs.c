@@ -891,17 +891,27 @@ out_copy_to_user:
 
 int susfs_spoof_cmdline_or_bootconfig(struct seq_file *m) {
 	unsigned seq;
-	int err = -EINVAL;
+	bool is_set;
+	char *buf;
+
+	if (!READ_ONCE(susfs_is_fake_cmdline_or_bootconfig_set))
+		return -EINVAL;
+
+	buf = (char *)kmalloc(SUSFS_FAKE_CMDLINE_OR_BOOTCONFIG_SIZE, GFP_KERNEL);
+	if (!buf)
+		return 0;
 
 	do {
 		seq = read_seqbegin(&susfs_fake_cmdline_or_bootconfig_seqlock);
-		if (susfs_is_fake_cmdline_or_bootconfig_set) {
-			seq_puts(m, fake_cmdline_or_bootconfig);
-			err = 0;
-		}
+		is_set = susfs_is_fake_cmdline_or_bootconfig_set;
+		if (is_set)
+			strscpy(buf, fake_cmdline_or_bootconfig, SUSFS_FAKE_CMDLINE_OR_BOOTCONFIG_SIZE);
 	} while (read_seqretry(&susfs_fake_cmdline_or_bootconfig_seqlock, seq));
 
-	return err;
+	if (is_set)
+		seq_puts(m, buf);
+	kfree(buf);
+	return is_set ? 0 : -EINVAL;
 }
 #endif
 
