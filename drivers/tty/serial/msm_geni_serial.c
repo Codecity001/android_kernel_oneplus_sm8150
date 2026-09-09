@@ -2246,8 +2246,8 @@ static void msm_geni_serial_shutdown(struct uart_port *uport)
 		}
 
 		if (pm_runtime_enabled(uport->dev)) {
-			ret = pm_runtime_put_sync_suspend(uport->dev);
-			if (ret) {
+			ret = pm_runtime_suspend(uport->dev);
+			if (ret < 0) {
 				IPC_LOG_MSG(msm_port->ipc_log_pwr,
 				"%s: Failed to suspend:%d\n", __func__, ret);
 			}
