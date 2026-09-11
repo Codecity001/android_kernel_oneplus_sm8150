@@ -153,7 +153,9 @@ QDF_STATUS ucfg_action_oui_send(struct wlan_objmgr_psoc *psoc)
 	}
 
 	for (id = 0; id < ACTION_OUI_MAXIMUM_ID; id++) {
-		if (id >= ACTION_OUI_HOST_ONLY)
+		if (id == ACTION_OUI_FORCE_MAX_NSS ||
+		    id == ACTION_OUI_DISABLE_AGGRESSIVE_EDCA ||
+		    id >= ACTION_OUI_HOST_ONLY)
 			continue;
 		status = action_oui_send(psoc_priv, id);
 		if (!QDF_IS_STATUS_SUCCESS(status))
