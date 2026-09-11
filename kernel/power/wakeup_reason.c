@@ -310,14 +310,10 @@ static ssize_t last_suspend_time_show(struct kobject *kobj,
 			struct kobj_attribute *attr, char *buf)
 {
 	struct timespec64 sleep_time;
-	struct timespec64 total_time;
 	struct timespec64 suspend_resume_time;
 
-	/*
-	 * total_time is calculated from monotonic bootoffsets because
-	 * unlike CLOCK_MONOTONIC it include the time spent in suspend state.
-	 */
-	total_time = ktime_to_timespec64(ktime_sub(curr_stime, last_stime));
+	/* The boottime offset advances only by the time spent asleep. */
+	sleep_time = ktime_to_timespec64(ktime_sub(curr_stime, last_stime));
 
 	/*
 	 * suspend_resume_time is calculated as monotonic (CLOCK_MONOTONIC)
@@ -325,9 +321,6 @@ static ssize_t last_suspend_time_show(struct kobject *kobj,
 	 */
 	suspend_resume_time =
 		ktime_to_timespec64(ktime_sub(curr_monotime, last_monotime));
-
-	/* sleep_time = total_time - suspend_resume_time */
-	sleep_time = timespec64_sub(total_time, suspend_resume_time);
 
 	/* Export suspend_resume_time and sleep_time in pair here. */
 	return sprintf(buf, "%llu.%09lu %llu.%09lu\n",
@@ -357,15 +350,15 @@ static int wakeup_reason_pm_event(struct notifier_block *notifier,
 	case PM_SUSPEND_PREPARE:
 		/* monotonic time since boot */
 		last_monotime = ktime_get();
-		/* monotonic time since boot including the time spent in suspend */
-		last_stime = ktime_get_boottime();
+		/* accumulated time spent in suspend */
+		last_stime = ktime_mono_to_any(0, TK_OFFS_BOOT);
 		clear_wakeup_reasons();
 		break;
 	case PM_POST_SUSPEND:
 		/* monotonic time since boot */
 		curr_monotime = ktime_get();
-		/* monotonic time since boot including the time spent in suspend */
-		curr_stime = ktime_get_boottime();
+		/* accumulated time spent in suspend */
+		curr_stime = ktime_mono_to_any(0, TK_OFFS_BOOT);
 		print_wakeup_sources();
 		break;
 	default:
