@@ -74,12 +74,17 @@ static int statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf)
 extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);
 extern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);
 
+int susfs_calculate_f_flags(struct vfsmount *mnt)
+{
+	return calculate_f_flags(mnt);
+}
+
 /* - Like statfs_by_dentry(), but if the inode is flagged SUS_KSTAT we copy the
  *   pre-computed spoofed kstatfs of the underlying (non-sus) mount instead of
  *   calling the real ->statfs(). OPEN_REDIRECT no longer spoofs statfs itself;
  *   redirected paths that must stay hidden should also be added to SUS_KSTAT.
  */
-static int susfs_statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf, bool *is_fuse)
+static int susfs_statfs_by_dentry(struct dentry *dentry, struct vfsmount *mnt, struct kstatfs *buf, bool *is_fuse)
 {
 	int retval;
 
@@ -90,12 +95,17 @@ static int susfs_statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf, bo
 	retval = security_sb_statfs(dentry);
 	if (retval)
 		return retval;
-	if (!susfs_sus_kstat_spoof_vfs_statfs(d_backing_inode(dentry), buf, is_fuse))
-		goto bypass_orig_flow;
+	if (!susfs_sus_kstat_spoof_vfs_statfs(d_backing_inode(dentry), buf, is_fuse)) {
+		if (buf->f_frsize == 0)
+			buf->f_frsize = buf->f_bsize;
+		return retval;
+	}
 	retval = dentry->d_sb->s_op->statfs(dentry, buf);
-bypass_orig_flow:
-	if (retval == 0 && buf->f_frsize == 0)
-		buf->f_frsize = buf->f_bsize;
+	if (retval == 0) {
+		buf->f_flags = calculate_f_flags(mnt);
+		if (buf->f_frsize == 0)
+			buf->f_frsize = buf->f_bsize;
+	}
 	return retval;
 }
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
@@ -113,9 +123,9 @@ int vfs_statfs(const struct path *path, struct kstatfs *buf)
 		struct inode *inode = d_backing_inode(path->dentry);
 		bool is_fuse = false;
 		if (susfs_is_inode_sus_kstat(inode, &is_fuse)) {
-			// - here we do not call calculate_f_flags() as buf->f_flags will be spoofed
-			//   by susfs_statfs_by_dentry().
-			return susfs_statfs_by_dentry(path->dentry, buf, &is_fuse);
+			// - here we do not call calculate_f_flags() here as buf->f_flags on the
+			//   sus_kstat path will be handled by susfs_statfs_by_dentry().
+			return susfs_statfs_by_dentry(path->dentry, path->mnt, buf, &is_fuse);
 		}
 	}
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
