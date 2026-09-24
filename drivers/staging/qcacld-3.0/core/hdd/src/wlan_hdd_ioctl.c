@@ -4003,6 +4003,7 @@ static int drv_cmd_set_suspend_mode(struct hdd_adapter *adapter,
 	uint8_t *value = command;
 	QDF_STATUS status;
 	uint8_t idle_monitor;
+	bool idle_roam_enabled;
 
 	if (QDF_STA_MODE != adapter->device_mode) {
 		hdd_debug("Non-STA interface");
@@ -4021,6 +4022,13 @@ static int drv_cmd_set_suspend_mode(struct hdd_adapter *adapter,
 		 */
 		hdd_err("Range validation failed");
 		return -EINVAL;
+	}
+
+	/* The idle trigger monitor only serves firmware idle roaming */
+	ucfg_mlme_is_idle_roam_enabled(hdd_ctx->psoc, &idle_roam_enabled);
+	if (!idle_roam_enabled) {
+		hdd_debug("Idle roam disabled, skip idle trigger monitor");
+		return 0;
 	}
 
 	hdd_debug("idle_monitor:%d", idle_monitor);

@@ -1050,6 +1050,16 @@ ucfg_mlme_get_roaming_offload(struct wlan_objmgr_psoc *psoc,
 			      bool *val);
 
 /**
+ * ucfg_mlme_is_idle_roam_enabled() - Get firmware idle roam setting
+ * @psoc: pointer to psoc object
+ * @val:  Pointer to enable/disable idle roaming
+ *
+ * Return: QDF Status
+ */
+QDF_STATUS
+ucfg_mlme_is_idle_roam_enabled(struct wlan_objmgr_psoc *psoc, bool *val);
+
+/**
  * ucfg_mlme_set_roaming_offload() - Enable/disable roaming offload
  * @psoc: pointer to psoc object
  * @val:  enable/disable roaming offload
@@ -1083,6 +1093,14 @@ ucfg_mlme_get_roam_disable_config(struct wlan_objmgr_psoc *psoc,
 static inline QDF_STATUS
 ucfg_mlme_get_roaming_offload(struct wlan_objmgr_psoc *psoc,
 			      bool *val)
+{
+	*val = false;
+
+	return QDF_STATUS_SUCCESS;
+}
+
+static inline QDF_STATUS
+ucfg_mlme_is_idle_roam_enabled(struct wlan_objmgr_psoc *psoc, bool *val)
 {
 	*val = false;
 
