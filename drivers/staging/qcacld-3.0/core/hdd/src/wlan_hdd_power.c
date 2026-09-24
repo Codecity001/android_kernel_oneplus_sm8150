@@ -211,23 +211,17 @@ int wlan_hdd_rx_thread_suspend(struct hdd_context *hdd_ctx)
  * skipped for the current connection
  * @adapter: pointer to the adapter
  *
- * Legacy SM8150 firmware can intermittently fail GTK rekey offload for
- * SAE/FT-SAE during WoW suspend, so keep those rekeys on the host.
+ * Legacy SM8150 firmware can intermittently fail GTK rekey offload
+ * during WoW suspend, regardless of auth type; the enable command is
+ * sent even for networks without a GTK. Keep rekeys on the host for
+ * every connection.
  *
  * Return: true if GTK offload should be bypassed for this suspend cycle
  */
 static bool hdd_is_gtk_offload_bypass_required(struct hdd_adapter *adapter)
 {
-	struct hdd_station_ctx *sta_ctx;
-
-	if (adapter->device_mode != QDF_STA_MODE &&
-	    adapter->device_mode != QDF_P2P_CLIENT_MODE)
-		return false;
-
-	sta_ctx = WLAN_HDD_GET_STATION_CTX_PTR(adapter);
-
-	return sta_ctx->conn_info.auth_type == eCSR_AUTH_TYPE_SAE ||
-	       sta_ctx->conn_info.auth_type == eCSR_AUTH_TYPE_FT_SAE;
+	return adapter->device_mode == QDF_STA_MODE ||
+	       adapter->device_mode == QDF_P2P_CLIENT_MODE;
 }
 
 /**
@@ -249,8 +243,7 @@ static void hdd_enable_gtk_offload(struct hdd_adapter *adapter)
 	if (hdd_is_gtk_offload_bypass_required(adapter)) {
 		adapter->session.station.gtk_offload_bypassed = true;
 		ucfg_pmo_flush_gtk_offload_req(adapter->vdev);
-		hdd_info("Bypass GTK offload for SAE/FT-SAE vdev %d",
-			 adapter->vdev_id);
+		hdd_info("Bypass GTK offload vdev %d", adapter->vdev_id);
 		return;
 	}
 
@@ -276,7 +269,7 @@ static void hdd_disable_gtk_offload(struct hdd_adapter *adapter)
 	     adapter->device_mode == QDF_P2P_CLIENT_MODE) &&
 	    adapter->session.station.gtk_offload_bypassed) {
 		adapter->session.station.gtk_offload_bypassed = false;
-		hdd_info("Skip GTK offload teardown for SAE/FT-SAE vdev %d",
+		hdd_info("Skip GTK offload teardown vdev %d",
 			 adapter->vdev_id);
 		return;
 	}
