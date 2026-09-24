@@ -3431,6 +3431,7 @@ void tcp_send_active_reset(struct sock *sk, gfp_t priority)
  */
 int tcp_send_synack(struct sock *sk)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *skb;
 
 	skb = tcp_write_queue_head(sk);
@@ -3443,6 +3444,8 @@ int tcp_send_synack(struct sock *sk)
 			struct sk_buff *nskb = skb_copy(skb, GFP_ATOMIC);
 			if (!nskb)
 				return -ENOMEM;
+			if (skb == tp->retransmit_skb_hint)
+				tp->retransmit_skb_hint = nskb;
 			tcp_unlink_write_queue(skb, sk);
 			__skb_header_release(nskb);
 			__tcp_add_write_queue_head(sk, nskb);
