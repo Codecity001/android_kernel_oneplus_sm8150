@@ -37,6 +37,8 @@
 #include "ksud.h"
 #include "ksud_boot.h"
 #include "selinux/selinux.h"
+#include "feature/selinux_hide.h"
+#include "policy/feature.h"
 #include "compat/kernel_compat.h"
 
 static const char KERNEL_SU_RC[] =
@@ -72,23 +74,15 @@ static struct work_struct __maybe_unused stop_execve_hook_work;
 static struct work_struct __maybe_unused stop_input_hook_work;
 #else
 bool ksu_init_rc_hook __read_mostly = true;
+#endif
+
+// These are referenced directly from patched kernel sources (manual hook
+// integration points), so they must exist in every build configuration
 bool __maybe_unused ksu_vfs_read_hook = true;
 bool ksu_input_hook __read_mostly = true;
 bool ksu_execveat_hook __read_mostly = true;
-#endif
 
 #define MAX_ARG_STRINGS 0x7FFFFFFF
-struct user_arg_ptr {
-#ifdef CONFIG_COMPAT
-	bool is_compat;
-#endif
-	union {
-		const char __user *const __user *native;
-#ifdef CONFIG_COMPAT
-		const compat_uptr_t __user *compat;
-#endif
-	} ptr;
-};
 
 static const char __user *get_user_arg_ptr(struct user_arg_ptr argv, int nr)
 {
@@ -176,7 +170,9 @@ static bool check_argv(struct user_arg_ptr argv, int index,
 
 static void ksu_initialize_selinux_tw_func(struct callback_head *cb)
 {
+	ksu_selinux_hide_handle_second_stage();
 	apply_kernelsu_rules();
+	ksu_feature_apply_forced();
 	cache_sid();
 	setup_ksu_cred();
 	kfree(cb);
@@ -433,13 +429,15 @@ static bool is_init_rc(struct file *fp)
 static void ksu_apply_init_rc_proxy(struct file *file)
 {
     // we only process the first read
+    // READ_ONCE/WRITE_ONCE: this runs from the read(2) path and can be
+    // entered concurrently on two descriptors of init.rc.
     static bool rc_hooked = false;
-    if (rc_hooked) {
+    if (READ_ONCE(rc_hooked)) {
         // we don't need these kprobe, unregister it!
         stop_init_rc_hook();
         return;
     }
-    rc_hooked = true;
+    WRITE_ONCE(rc_hooked, true);
 
     // now we can sure that the init process is reading
     // `/system/etc/init/init.rc`
@@ -465,7 +463,19 @@ static void ksu_apply_init_rc_proxy(struct file *file)
 
 void ksu_handle_sys_read(unsigned int fd)
 {
-    struct file *file = fget(fd);
+    struct file *file;
+
+    /*
+     * The manual hook in fs/read_write.c calls us for every read(2) for the
+     * lifetime of the boot; stop_init_rc_hook() flips this flag so the
+     * proxy can be torn down again.
+     */
+#ifndef KSU_KPROBES_HOOK
+    if (likely(!ksu_init_rc_hook))
+        return;
+#endif
+
+    file = fget(fd);
     if (!file) return;
 
     if (is_init_rc(file)) {
@@ -533,13 +543,10 @@ bool ksu_is_safe_mode()
 
 #ifdef KSU_KPROBES_HOOK
 
-static int sys_execve_handler_pre(struct kprobe *p, struct pt_regs *regs)
+static int ksu_execve_syscall_common(struct pt_regs *real_regs,
+				     const char __user **filename_user,
+				     const char __user *const __user *__argv)
 {
-	struct pt_regs *real_regs = PT_REAL_REGS(regs);
-	const char __user **filename_user =
-		(const char **)&PT_REGS_PARM1(real_regs);
-	const char __user *const __user *__argv =
-		(const char __user *const __user *)PT_REGS_PARM2(real_regs);
 	struct user_arg_ptr argv = { .ptr.native = __argv };
 	struct filename filename_in, *filename_p;
 	char path[32];
@@ -568,7 +575,28 @@ static int sys_execve_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	filename_in.name = path;
 
 	filename_p = &filename_in;
-	return ksu_handle_execveat_ksud(AT_FDCWD, &filename_p, &argv, NULL, NULL);
+	return ksu_handle_execveat_ksud(AT_FDCWD, &filename_p, &argv, NULL,
+					NULL);
+}
+
+static int sys_execve_handler_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	struct pt_regs *real_regs = PT_REAL_REGS(regs);
+	return ksu_execve_syscall_common(real_regs,
+					 (const char __user **)&PT_REGS_PARM1(real_regs),
+					 (const char __user *const __user *)PT_REGS_PARM2(real_regs));
+}
+
+static int sys_execveat_handler_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	struct pt_regs *real_regs = PT_REAL_REGS(regs);
+	// New bionic maps execve to execveat(AT_FDCWD, path, argv, envp, 0)
+	if ((int)PT_REGS_PARM1(real_regs) != AT_FDCWD ||
+	    (int)PT_REGS_SYSCALL_PARM4(real_regs) != 0)
+		return 0;
+	return ksu_execve_syscall_common(real_regs,
+					 (const char __user **)&PT_REGS_PARM2(real_regs),
+					 (const char __user *const __user *)PT_REGS_PARM3(real_regs));
 }
 
 static int sys_read_handler_pre(struct kprobe *p, struct pt_regs *regs)
@@ -662,6 +690,10 @@ static struct kprobe execve_kp = {
 	.symbol_name = SYS_EXECVE_SYMBOL,
 	.pre_handler = sys_execve_handler_pre,
 };
+static struct kprobe execveat_kp = {
+	.symbol_name = SYS_EXECVEAT_SYMBOL,
+	.pre_handler = sys_execveat_handler_pre,
+};
 static struct kprobe sys_read_kp = {
 	.symbol_name = SYS_READ_SYMBOL,
 	.pre_handler = sys_read_handler_pre,
@@ -687,6 +719,7 @@ static void do_stop_init_rc_hook(struct work_struct *work)
 
 static void do_stop_execve_hook(struct work_struct *work)
 {
+	unregister_kprobe(&execveat_kp);
 	unregister_kprobe(&execve_kp);
 }
 
@@ -746,6 +779,9 @@ int __maybe_unused ksu_handle_vfs_read(struct file **file_ptr, char __user **buf
                 size_t *count_ptr, loff_t **pos)
 {
     struct file *file = *file_ptr;
+
+    if (likely(!ksu_init_rc_hook))
+        return 0;
 
     if (IS_ERR_OR_NULL(file)) return 0;
 
@@ -886,6 +922,14 @@ void __init ksu_ksud_init()
 	ret = register_kprobe(&execve_kp);
 	pr_info("ksud: execve_kp: %d\n", ret);
 
+	ret = register_kprobe(&execveat_kp);
+	// execveat is always present on supported kernels, but do not
+	// fail hard if the symbol is unavailable (e.g. stripped kernels)
+	if (ret)
+		pr_info("ksud: execveat_kp not available: %d\n", ret);
+	else
+		pr_info("ksud: execveat_kp: %d\n", ret);
+
 	ret = register_kprobe(&sys_read_kp);
 	pr_info("ksud: sys_read_kp: %d\n", ret);
 
@@ -904,6 +948,7 @@ void __init ksu_ksud_init()
 void __exit ksu_ksud_exit()
 {
 #ifdef KSU_KPROBES_HOOK
+	unregister_kprobe(&execveat_kp);
 	unregister_kprobe(&execve_kp);
 	// this should be done before unregister sys_read_kp
 	// unregister_kprobe(&sys_read_kp);

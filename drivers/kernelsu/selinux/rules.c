@@ -6,7 +6,7 @@
 #include <linux/lockdep.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include "feature/selinux_hide.c"
+#include "feature/selinux_hide.h"
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
 #include <uapi/linux/sched/types.h>
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
@@ -59,16 +59,18 @@ extern int avc_ss_reset(struct selinux_avc *avc, u32 seqno);
 // reset avc cache table, otherwise the new rules will not take effect if already denied
 static void reset_avc_cache()
 {
+	u32 seqno = selinux_state.ss ? ++selinux_state.ss->latest_granting : 1;
+
 #if ((!defined(KSU_COMPAT_USE_SELINUX_STATE)) || \
 	LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
-    avc_ss_reset(0);
-    selnl_notify_policyload(0);
-    selinux_status_update_policyload(0);
+    avc_ss_reset(seqno);
+    selnl_notify_policyload(seqno);
+    selinux_status_update_policyload(seqno);
 #else
     struct selinux_avc *avc = selinux_state.avc;
-    avc_ss_reset(avc, 0);
-    selnl_notify_policyload(0);
-    selinux_status_update_policyload(&selinux_state, 0);
+    avc_ss_reset(avc, seqno);
+    selnl_notify_policyload(seqno);
+    selinux_status_update_policyload(&selinux_state, seqno);
 #endif
     selinux_xfrm_notify_policyload();
 }
@@ -204,54 +206,37 @@ out_unlock:
 	mutex_unlock(&selinux_state.policy_mutex);
 #else
 
-	cpumask_t old_mask;
 	db = get_policydb();
 	rwlock_t *lock = ksu_get_policy_rwlock();
-	
+
 	if (!lock)
 		goto do_stop_machine;
 
 	/*
-	 * HACK: write_lock() is held with preempt enabled. DO NOT let the
-	 * task be migrated to any other CPU than the current CPU. And since
-	 * set_cpus_allowed_ptr() can sleep, use raw_smp_processor_id() to get
-	 * current CPU and bypass preemption checks.
+	 * write_lock() already disables preemption; keep it disabled for the
+	 * whole run. Readers take policy_rwlock with preemption off, so a single
+	 * preemption or sleep while the write side is held deadlocks every CPU
+	 * that reaches security_compute_av() (6-way soft lockup + RCU stall).
+	 * Nothing below may sleep - allocations must be GFP_ATOMIC.
 	 */
-	cpumask_copy(&old_mask, ksu_get_current_cpumask_t());
-	set_cpus_allowed_ptr(current, cpumask_of(raw_smp_processor_id()));
-
 	write_lock(lock);
-	preempt_enable();
-
-    // we do this dance since both kernel and userspace can trigger this
-	if (likely(current && current->mm))
-		goto has_current_mm;
 
 	apply_kernelsu_rules_fn((void *)db);
-	goto out_unlock;
 
-has_current_mm:
-	;
-
-    // HACK: raise priority of this to the heavens
-	int old_policy = current->policy;
-	struct sched_param old_param = { .sched_priority = current->rt_priority };
-	struct sched_param new_param = { .sched_priority = 50 };
-
-	sched_setscheduler_nocheck(current, 1, &new_param); // raise, fifo, 50
-	apply_kernelsu_rules_fn((void *)db);
-	sched_setscheduler_nocheck(current, old_policy, &old_param); // restore
-
-out_unlock:
-	preempt_disable();
 	write_unlock(lock);
-	set_cpus_allowed_ptr(current, &old_mask);
-	goto out_flush;
+	/*
+	 * ksu_policydb_fixup_len() takes a GFP_KERNEL kvmalloc(), so it must run
+	 * with the write lock released: sleeping while the write side is held is
+	 * exactly what deadlocks readers in security_compute_av().
+	 */
+	ksu_policydb_fixup_len(db, "apply_kernelsu_rules");
+	goto out_reset_avc;
 
 do_stop_machine:
 	stop_machine(apply_kernelsu_rules_fn, (void *)db, NULL);
+	ksu_policydb_fixup_len(db, "apply_kernelsu_rules");
 
-out_flush:
+out_reset_avc:
 	smp_mb();
 	reset_avc_cache();
 #ifdef CONFIG_KSU_SUSFS
@@ -361,6 +346,22 @@ int sepol_expected_argc(u32 cmd)
     default:
         return -EINVAL;
     }
+}
+
+// fork (susfs): feed applied sepolicy cmds into selinux_hide's track lists
+static void ksu_selinux_hide_track_cmd(u32 cmd, const char *args[])
+{
+    if (!args || !args[0])
+        return;
+
+    if (cmd == KSU_SEPOLICY_CMD_TYPE || cmd == KSU_SEPOLICY_CMD_TYPE_ATTR ||
+        cmd == KSU_SEPOLICY_CMD_TYPE_STATE || cmd == KSU_SEPOLICY_CMD_ATTR) {
+        ksu_selinux_hide_add_type(args[0]);
+        return;
+    }
+
+    if (sepol_expected_argc(cmd) >= 2 && args[1])
+        ksu_selinux_hide_add_rule(args[0], args[1]);
 }
 
 static int apply_one_sepolicy_cmd(struct policydb *db,
@@ -619,7 +620,7 @@ int handle_sepolicy(void __user *user_data, u64 data_len)
 			pr_err("sepol: cmd #%u failed, cmd=%u subcmd=%u.\n", cmd_index, header.cmd, header.subcmd);
 		} else {
 			success_cmd_count++;
-            ksu_add_shit_to_list(header.cmd, args);
+            ksu_selinux_hide_track_cmd(header.cmd, args);
 		}
 		cmd_index++;
 	}
@@ -643,11 +644,55 @@ out_free:
 }
 #else
 
+/*
+ * A command is at least its header and one length-prefixed, NUL-terminated
+ * argument, which bounds the number of commands in a batch.
+ */
+#define KSU_SEPOLICY_MIN_CMD_SIZE (sizeof(struct sepol_data) + sizeof(u32) + 1)
+
 struct handle_sepolicy_args {
 	void *ctx_success_cmd_count;
 	void *ctx_payload;
 	u64 ctx_data_len;
+	unsigned long *ctx_applied;
 };
+
+/*
+ * selinux_hide's track lists take a mutex and wait for RCU grace periods, so
+ * the applied commands are fed to them only once the batch has run and the
+ * policy write lock is released.
+ */
+static void ksu_selinux_hide_track_batch(const u8 *payload, u64 data_len,
+					 const unsigned long *applied)
+{
+	struct sepol_batch_cursor cursor = {
+		.cur = payload,
+		.end = payload + (size_t)data_len,
+	};
+	u32 cmd_index;
+
+	for (cmd_index = 0; cursor.cur < cursor.end; cmd_index++) {
+		struct sepol_data header;
+		const char *args[KSU_SEPOLICY_MAX_ARGS] = { 0 };
+		int expected_argc;
+		u32 arg_index;
+
+		if (sepol_read_cmd_header(&cursor, &header) < 0)
+			return;
+
+		expected_argc = sepol_expected_argc(header.cmd);
+		if (expected_argc < 0 || expected_argc > KSU_SEPOLICY_MAX_ARGS)
+			return;
+
+		for (arg_index = 0; arg_index < (u32)expected_argc; arg_index++) {
+			if (sepol_read_string(&cursor, &args[arg_index]) < 0)
+				return;
+		}
+
+		if (test_bit(cmd_index, applied))
+			ksu_selinux_hide_track_cmd(header.cmd, args);
+	}
+}
 
 static int handle_sepolicy_fn(void *data)
 {
@@ -696,8 +741,10 @@ static int handle_sepolicy_fn(void *data)
 			pr_err("sepol: cmd #%u failed, cmd=%u subcmd=%u.\n", cmd_index, header.cmd, header.subcmd);
 		else {
 			success_cmd_count++;
-            ksu_add_shit_to_list(header.cmd, args);
+			__set_bit(cmd_index, ctx->ctx_applied);
 		}
+
+		ret = 0;
 
 		cmd_index++;
 	}
@@ -710,9 +757,9 @@ out:
 int handle_sepolicy(void __user *user_data, u64 data_len)
 {
 	u8 *payload;
+	unsigned long *applied;
 	int ret = 0;
 	int success_cmd_count = 0;
-	cpumask_t old_mask;
 
 	if (!user_data || !data_len)
 		return -EINVAL;
@@ -723,6 +770,13 @@ int handle_sepolicy(void __user *user_data, u64 data_len)
 	payload = kvmalloc((size_t)data_len, GFP_KERNEL);
 	if (!payload)
 		return -ENOMEM;
+
+	applied = kvzalloc(BITS_TO_LONGS(DIV_ROUND_UP(data_len, KSU_SEPOLICY_MIN_CMD_SIZE)) *
+				   sizeof(unsigned long), GFP_KERNEL);
+	if (!applied) {
+		ret = -ENOMEM;
+		goto out_free;
+	}
 
 	if (copy_from_user(payload, user_data, (size_t)data_len)) {
 		ret = -EFAULT;
@@ -737,58 +791,50 @@ int handle_sepolicy(void __user *user_data, u64 data_len)
 	ctx.ctx_success_cmd_count = (void *)&success_cmd_count;
 	ctx.ctx_payload = (void *)payload;
 	ctx.ctx_data_len = (u64)data_len;
+	ctx.ctx_applied = applied;
 
 	rwlock_t *lock = ksu_get_policy_rwlock();
 	if (!lock)
 		goto do_stop_machine;
 
 	/*
-	 * HACK: write_lock() is held with preempt enabled. DO NOT let the
-	 * task be migrated to any other CPU than the current CPU. And since
-	 * set_cpus_allowed_ptr() can sleep, use raw_smp_processor_id() to get
-	 * current CPU and bypass preemption checks.
+	 * write_lock() already disables preemption; keep it disabled for the
+	 * whole batch. Readers take policy_rwlock with preemption off, so a
+	 * single preemption or sleep while the write side is held deadlocks
+	 * every CPU that reaches security_compute_av() (6-way soft lockup +
+	 * RCU stall). Nothing below may sleep - allocations are GFP_ATOMIC.
 	 */
-	cpumask_copy(&old_mask, ksu_get_current_cpumask_t());
-	set_cpus_allowed_ptr(current, cpumask_of(raw_smp_processor_id()));
-
 	write_lock(lock);
-	preempt_enable();
-
-	if (likely(current && current->mm))
-		goto has_current_mm;
 
 	ret = handle_sepolicy_fn((void *)&ctx);
-	goto out_unlock;
 
-has_current_mm:
-	;
-
-	int old_policy = current->policy;
-	struct sched_param old_param = { .sched_priority = current->rt_priority };
-	struct sched_param new_param = { .sched_priority = 50 };
-
-	sched_setscheduler_nocheck(current, 1, &new_param);
-	ret = handle_sepolicy_fn((void *)&ctx);
-	sched_setscheduler_nocheck(current, old_policy, &old_param);
-
-out_unlock:
-	preempt_disable();
 	write_unlock(lock);
-	set_cpus_allowed_ptr(current, &old_mask);
+	/* See apply_kernelsu_rules(): fixup_len may sleep, keep it unlocked. */
+	ksu_policydb_fixup_len(get_policydb(), "handle_sepolicy");
 	goto out_done;
 
 do_stop_machine:
 	ret = stop_machine(handle_sepolicy_fn, (void *)&ctx, NULL);
+	ksu_policydb_fixup_len(get_policydb(), "handle_sepolicy");
 
 out_done:
+	smp_mb();
+	/*
+	 * Always flush and track. The legacy path applies rules in place with
+	 * no rollback, so a partially failed batch still mutated the policydb:
+	 * a stale AVC cache would keep serving the pre-batch decisions, and the
+	 * rules it did apply still need hiding.
+	 */
+	reset_avc_cache();
+	ksu_selinux_hide_track_batch(payload, data_len, applied);
+
 	if (ret)
 		goto out_free;
 
-	smp_mb();
-	reset_avc_cache();
 	ret = success_cmd_count;
 
 out_free:
+	kvfree(applied);
 	kvfree(payload);
 
 	return ret;

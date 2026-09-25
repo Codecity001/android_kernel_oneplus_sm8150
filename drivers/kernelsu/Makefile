@@ -4,6 +4,8 @@ kernelsu-objs += compat/kernel_compat.o
 kernelsu-objs += feature/kernel_umount.o
 kernelsu-objs += feature/sulog.o
 kernelsu-objs += feature/sucompat.o
+kernelsu-objs += feature/shell_su_adb_only.o
+kernelsu-objs += feature/selinux_hide.o
 
 kernelsu-objs += hook/hook_manager.o
 kernelsu-objs += hook/lsm_hooks.o
@@ -65,41 +67,94 @@ endif
 
 ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include
 
+# preinit runner: a static nolibc binary embedded into kernelsu, see preinit/.
+# It is built against the installed UAPI headers of the target kernel
+# (CONFIG_HEADERS_INSTALL, enabled by gki_defconfig).
+KSU_UAPI_INC := $(objtree)/usr/include
+ifneq ($(wildcard $(KSU_UAPI_INC)/linux/unistd.h),)
+kernelsu-objs += preinit/preinit.o
+kernelsu-objs += preinit/blob.o
+
+KSU_RUNNER_CFLAGS := $(CLANG_FLAGS) -std=gnu11 -Os -Wall \
+	-nostdinc -isystem $(shell $(CC) -print-file-name=include) \
+	-I$(KSU_KERNEL_DIR)/preinit/runner/nolibc -I$(KSU_UAPI_INC) \
+	-I$(KSU_KERNEL_DIR)/include \
+	-ffreestanding -fno-stack-protector -fno-pic -fno-pie \
+	-fno-asynchronous-unwind-tables -fno-unwind-tables \
+	-ffunction-sections -fdata-sections
+
+ifneq ($(shell [ -f $(srctree)/include/uapi/linux/sched.h ] && grep -q "struct clone_args" $(srctree)/include/uapi/linux/sched.h; echo $$?),0)
+KSU_RUNNER_CFLAGS += -DKSU_HAS_NO_CLONE_ARGS
+endif
+
+quiet_cmd_ksu_runner = RUNNER  $@
+      cmd_ksu_runner = $(CC) $(KSU_RUNNER_CFLAGS) -c -o $@.o $< && \
+	$(LD) -static -nostdlib -e _start --gc-sections -s -o $@ $@.o && \
+	rm -f $@.o
+
+$(obj)/preinit/runner.elf: $(KSU_KERNEL_DIR)/preinit/runner/runner.c \
+	$(wildcard $(KSU_KERNEL_DIR)/preinit/runner/nolibc/*.h \
+		   $(KSU_KERNEL_DIR)/preinit/runner/nolibc/sys/*.h \
+		   $(KSU_KERNEL_DIR)/include/uapi/*.h) FORCE
+	$(call if_changed,ksu_runner)
+
+targets += preinit/runner.elf
+$(obj)/preinit/blob.o: $(obj)/preinit/runner.elf
+$(info -- KernelSU: $(KSU_UAPI_INC): preinit enabled)
+asflags-y += -DKSU_PREINIT_RUNNER_BIN=\"$(obj)/preinit/runner.elf\"
+else
+$(warning -- KernelSU: $(KSU_UAPI_INC) not found, preinit disabled)
+ccflags-y += -DKSU_NO_PREINIT
+endif
+
 obj-$(CONFIG_KSU) += kernelsu.o
 
 LPATH := /usr/bin/env PATH="$$PATH":/usr/bin:/usr/local/bin
 MDIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
-# Check if this is a git repository
-# Try to detect Git repo intelligently
-KSU_GIT_VERSION := 3215
-KSU_GIT_TAG := v3.3.0
+# Vendored snapshot: sidex15/KernelSU-Next legacy-susfs-v2 @ d999a2af
+# (upstream v3.4.0-legacy + susfs v2) merged up to upstream legacy tip
+# 0b17f242. Not a git repo here, so pin the version:
+# 30000 + 3026 + 289 = 33315. No v3.4.1/v3.4.2 legacy tag was released
+# upstream; report v3.4.2 to match the vendored feature level.
+KSU_GIT_VERSION := 3026
+KSU_GIT_TAG := v3.4.2
 KSU_GIT_VERSION_VALID := 1
 
 # Calculate version if git version is available
 ifdef KSU_GIT_VERSION_VALID
-# ksu_version: major * 30000 + git version for historical reasons
-$(eval KSU_VERSION=$(shell expr 30000 + $(KSU_GIT_VERSION) + 200))
+$(eval KSU_VERSION=$(shell expr 30000 + $(KSU_GIT_VERSION) + 289))
 $(info -- KernelSU-Next version: $(KSU_VERSION))
-ccflags-y += -DKSU_VERSION=$(KSU_VERSION)
 else
 # If there is no .git directory, use default version
 $(warning "KSU_GIT_VERSION not defined! It is better to make KernelSU-Next a git repository!")
 KSU_VERSION_FALLBACK := 1
 $(info -- KernelSU-Next version fallback: $(KSU_VERSION_FALLBACK))
-ccflags-y += -DKSU_VERSION=$(KSU_VERSION_FALLBACK)
+KSU_VERSION := $(KSU_VERSION_FALLBACK)
 endif
+
+# Allow integrators to pin the reported version (e.g. when backporting
+# onto release branches where the commit count does not match releases)
+ifdef KSU_VERSION_OVERRIDE
+KSU_VERSION := $(KSU_VERSION_OVERRIDE)
+$(info -- KernelSU-Next version override: $(KSU_VERSION))
+endif
+ccflags-y += -DKSU_VERSION=$(KSU_VERSION)
 
 ifdef KSU_GIT_VERSION_VALID
 $(eval KSU_VERSION_TAG=$(KSU_GIT_TAG))
-$(info -- KernelSU-Next tag: $(KSU_VERSION_TAG))
-ccflags-y += -DKSU_VERSION_TAG=\"$(KSU_VERSION_TAG)\"
 else
 $(warning "KSU_VERSION_TAG not defined! It is better to make KernelSU-Next a git submodule!")
 KSU_VERSION_TAG_FALLBACK := v0.0.1
-$(info -- KernelSU-Next tag fallback: $(KSU_VERSION_TAG_FALLBACK))
-ccflags-y += -DKSU_VERSION_TAG=\"$(KSU_VERSION_TAG_FALLBACK)\"
+KSU_VERSION_TAG=$(KSU_VERSION_TAG_FALLBACK)
 endif
+
+ifdef KSU_VERSION_TAG_OVERRIDE
+KSU_VERSION_TAG := $(KSU_VERSION_TAG_OVERRIDE)
+endif
+
+$(info -- KernelSU-Next tag: $(KSU_VERSION_TAG))
+ccflags-y += -DKSU_VERSION_TAG=\"$(KSU_VERSION_TAG)\"
 
 ifndef KSU_NEXT_MANAGER_SIZE
 KSU_NEXT_MANAGER_SIZE := 0x3e6
@@ -127,6 +182,15 @@ $(info -- KernelSU-Next: Hook mode: Kprobes)
 ccflags-y += -DKSU_KPROBES_HOOK
 # Let's make it 0, so it would pass.
 HAVE_KSU_HOOK := 0
+endif
+
+ifeq ($(CONFIG_KSU_SYSCALL_TABLE_HOOK), y)
+$(info -- KernelSU-Next: Hook mode: Syscall table patching)
+ccflags-y += -DKSU_SYSCALL_TABLE_HOOK
+HAVE_KSU_HOOK := 0
+kernelsu-objs += hook/patch_memory.o
+kernelsu-objs += hook/syscall_table_hook.o
+kernelsu-objs += infra/symbol_resolver.o
 endif
 
 ifeq ($(CONFIG_KSU_MANUAL_HOOK), y)
@@ -255,6 +319,9 @@ ccflags-y += -DKSU_COMPAT_HAS_EXPORTED_POLICY_RWLOCK
 endif
 ifeq ($(shell grep -q "cpus_ptr;" $(srctree)/include/linux/sched.h; echo $$?),0)
 ccflags-y += -DKSU_COMPAT_HAS_BACKPORTED_CPUS_PTR
+endif
+ifeq ($(shell grep -q "struct pid \*task_pgrp" $(srctree)/include/linux/sched.h; echo $$?),0)
+ccflags-y += -DKSU_COMPAT_HAS_TASK_PGRP_FUNC
 endif
 
 # fallthrough check for allowlist v2
