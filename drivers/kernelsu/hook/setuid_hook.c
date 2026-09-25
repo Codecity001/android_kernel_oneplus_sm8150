@@ -16,8 +16,9 @@
 #include <linux/uidgid.h>
 #include <linux/version.h>
 
+#include "policy/app_profile.h"
 #include "policy/allowlist.h"
-#include "setuid_hook.h"
+#include "hook/setuid_hook.h"
 #include "klog.h" // IWYU pragma: keep
 #include "manager/manager_identity.h"
 #include "selinux/selinux.h"
@@ -30,7 +31,6 @@
 #include <linux/susfs_def.h>
 #endif // #ifdef CONFIG_KSU_SUSFS
 
-extern void disable_seccomp(struct task_struct *tsk);
 #ifdef CONFIG_KSU_SUSFS
 static inline bool is_zygote_isolated_service_uid(uid_t uid)
 {
@@ -123,7 +123,7 @@ int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid)
             ksu_seccomp_allow_cache(current->seccomp.filter, __NR_reboot);
         }
 #else
-		disable_seccomp(current);
+		disable_seccomp();
 #endif
 
 #ifdef KSU_KPROBES_HOOK
@@ -155,7 +155,7 @@ int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid)
             ksu_seccomp_allow_cache(current->seccomp.filter, __NR_reboot);
         }
 #else
-		disable_seccomp(current);
+		disable_seccomp();
 #endif
 
 #ifdef KSU_KPROBES_HOOK

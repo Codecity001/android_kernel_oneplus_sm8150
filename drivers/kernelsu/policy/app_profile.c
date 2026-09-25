@@ -138,6 +138,7 @@ void disable_seccomp(void)
 
 int escape_with_root_profile(void)
 {
+	int ret = 0;
 	struct cred *cred;
     struct root_profile *profile = NULL;
 	struct user_struct *new_user;
@@ -145,16 +146,18 @@ int escape_with_root_profile(void)
 	cred = prepare_creds();
 	if (!cred) {
 		pr_warn("prepare_creds failed!\n");
-		return 0;
+		return -ENOMEM;
 	}
 
 	if (cred->euid.val == 0) {
 		pr_warn("Already root, don't escape!\n");
+		ret = -EALREADY;
 		goto out_abort_creds;
 	}
 
     if (test_thread_flag(TIF_KSU_DISABLE_ESCAPE_WITH_ROOT)) {
         pr_warn("TIF_KSU_DISABLE_ESCAPE_WITH_ROOT found, don't escape!\n");
+        ret = -EPERM;
         goto out_abort_creds;
     }
 
@@ -186,6 +189,7 @@ int escape_with_root_profile(void)
      */
     new_user = alloc_uid(cred->uid);
     if (!new_user) {
+        ret = -ENOMEM;
         goto out_abort_creds;
     }
 
@@ -236,7 +240,7 @@ out_abort_creds:
     if (profile)
         ksu_put_root_profile(profile);
     abort_creds(cred);
-	return 0;
+	return ret;
 }
 
 void escape_to_root_for_init(void) {
