@@ -214,6 +214,7 @@ struct fsnotify_mark_connector {
 #define FSNOTIFY_OBJ_TYPE_VFSMOUNT	0x02
 #define FSNOTIFY_OBJ_ALL_TYPES		(FSNOTIFY_OBJ_TYPE_INODE | \
 					 FSNOTIFY_OBJ_TYPE_VFSMOUNT)
+#define FSNOTIFY_CONN_FLAG_DESTROYING	0x04
 	unsigned int flags;	/* Type of object [lock] */
 	union {	/* Object pointer [lock] */
 		struct inode *inode;
