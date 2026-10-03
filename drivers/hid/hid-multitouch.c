@@ -38,6 +38,7 @@
  * [3] https://github.com/bentiss/hid-devices
  */
 
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/hid.h>
 #include <linux/module.h>
@@ -1396,6 +1397,13 @@ static void mt_remove(struct hid_device *hdev)
 {
 	struct mt_device *td = hid_get_drvdata(hdev);
 
+	/*
+	 * Without timer_shutdown_sync(), hold MT_IO_FLAGS_RUNNING for good so
+	 * that mt_touch_report(), the only path that re-arms the timer, cannot
+	 * queue it again after del_timer_sync().
+	 */
+	while (test_and_set_bit_lock(MT_IO_FLAGS_RUNNING, &td->mt_io_flags))
+		msleep(1);
 	del_timer_sync(&td->release_timer);
 
 	sysfs_remove_group(&hdev->dev.kobj, &mt_attribute_group);
