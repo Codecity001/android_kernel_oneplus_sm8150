@@ -282,3 +282,5 @@ source "security/Kconfig.hardening"
 
 endmenu
 
+source "security/baseband-guard/Kconfig"
+
