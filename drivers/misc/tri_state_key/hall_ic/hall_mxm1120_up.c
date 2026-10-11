@@ -694,10 +694,16 @@ static int m1120_enable_irq(bool enable)
 		return -EINVAL;
 	}
 
-	if (enable)
-		enable_irq(p_m1120_data->irq);
-	else
-		disable_irq_nosync(p_m1120_data->irq);
+	if (enable) {
+		/* Only the fired hall had its IRQ disabled in the handler. */
+		if (p_m1120_data->irq_enabled &&
+		    irqd_irq_disabled(irq_get_irq_data(p_m1120_data->irq)))
+			enable_irq(p_m1120_data->irq);
+	} else {
+		if (p_m1120_data->irq_enabled &&
+		    !irqd_irq_disabled(irq_get_irq_data(p_m1120_data->irq)))
+			disable_irq_nosync(p_m1120_data->irq);
+	}
 
 	return 0;
 }

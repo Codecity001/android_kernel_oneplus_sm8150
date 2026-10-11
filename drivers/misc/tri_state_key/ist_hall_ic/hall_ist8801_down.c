@@ -693,10 +693,16 @@ static int ist8801_enable_irq(bool enable)
 		return -EINVAL;
 	}
 
-	if (enable)
-		enable_irq(g_ist8801_data->irq);
-	else
-		disable_irq_nosync(g_ist8801_data->irq);
+	if (enable) {
+		/* Only the fired hall had its IRQ disabled in the handler. */
+		if (g_ist8801_data->irq_enabled &&
+		    irqd_irq_disabled(irq_get_irq_data(g_ist8801_data->irq)))
+			enable_irq(g_ist8801_data->irq);
+	} else {
+		if (g_ist8801_data->irq_enabled &&
+		    !irqd_irq_disabled(irq_get_irq_data(g_ist8801_data->irq)))
+			disable_irq_nosync(g_ist8801_data->irq);
+	}
 	return 0;
 }
 
