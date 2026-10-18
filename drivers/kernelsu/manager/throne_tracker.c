@@ -78,12 +78,6 @@ struct data_path {
 	struct list_head list;
 };
 
-struct apk_path_hash {
-	unsigned int hash;
-	bool exists;
-	struct list_head list;
-};
-
 struct my_dir_context {
 	struct dir_context ctx;
 	struct list_head *data_path_list;
