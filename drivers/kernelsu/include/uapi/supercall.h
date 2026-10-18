@@ -11,7 +11,10 @@
 // 4: add KSU_GET_INFO_FLAG_BUNDLED
 // 5: add EVENT_SERVICES with a start/skip result
 // 6: add KSU_IOCTL_LOOKUP_SYMBOLS and KSU_GET_INFO_FLAG_PREINIT; modules.rc and preinit may live under /metadata/vold/ksu
-#define KERNEL_SU_UAPI_VERSION 6
+// Advertise 5: public 3.4.x managers speak 5 and isFullFeatured() requires
+// exact parity, otherwise the superuser/module tabs are hidden. The 6-only
+// consumers (ksuinit symbol lookup, preinit) are not shipped in this build.
+#define KERNEL_SU_UAPI_VERSION 5
 
 /* Magic numbers for reboot hook to install fd */
 static const __u32 KSU_INSTALL_MAGIC1 = 0xDEADBEEF;
