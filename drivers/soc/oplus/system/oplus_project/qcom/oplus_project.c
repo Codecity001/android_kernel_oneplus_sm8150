@@ -2,6 +2,7 @@
 /*
  * Copyright (C) 2018-2020 Oplus. All rights reserved.
  */
+#include <linux/ctype.h>
 #include <linux/uaccess.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -88,6 +89,13 @@ static struct pcb_match pcb_str[] = {
 struct proc_dir_entry *oplus_info = NULL;
 struct proc_dir_entry *oplus_info_temp = NULL;
 
+/* The OCP flag bytes are 0 when no event was recorded; printing them raw
+ * embeds a NUL that cuts off every reader treating the output as a C string. */
+static char ocp_char(uint8_t c)
+{
+    return isprint(c) ? c : '-';
+}
+
 static void init_project_version(void)
 {
     /*for qcom's smem*/
@@ -130,10 +138,10 @@ static void init_project_version(void)
         pr_err("OCP: %d 0x%x %c %d 0x%x %c\n",
             g_project->nDataSCDT.PmicOcp[0],
             g_project->nDataSCDT.PmicOcp[1],
-            g_project->nDataSCDT.PmicOcp[2],
+            ocp_char(g_project->nDataSCDT.PmicOcp[2]),
             g_project->nDataSCDT.PmicOcp[3],
             g_project->nDataSCDT.PmicOcp[4],
-            g_project->nDataSCDT.PmicOcp[5]);
+            ocp_char(g_project->nDataSCDT.PmicOcp[5]));
     }
 
     if(is_new_cdt()){
@@ -368,8 +376,8 @@ static void dump_ocp_info(struct seq_file *s)
         g_project->nDataSCDT.PmicOcp[1],
         g_project->nDataSCDT.PmicOcp[2],
         g_project->nDataSCDT.PmicOcp[3],
-        g_project->nDataSCDT.PmicOcp[4],
-        g_project->nDataSCDT.PmicOcp[5]);
+        ocp_char(g_project->nDataSCDT.PmicOcp[4]),
+        ocp_char(g_project->nDataSCDT.PmicOcp[5]));
 }
 
 static void dump_serial_info(struct seq_file *s)
