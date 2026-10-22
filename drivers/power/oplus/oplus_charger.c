@@ -96,7 +96,8 @@ static struct oplus_chg_chip *g_charger_chip = NULL;
 #define OPLUS_CHG_DEFAULT_CHARGING_CURRENT	512
 #define CHG_VOLT_7500MV 7500
 
-int enable_charger_log = 2;
+/* CHG_LOG_FULL adds the periodic state dumps: echo 2 > /proc/charger_log */
+int enable_charger_log = CHG_LOG_CRTI;
 int charger_abnormal_log = 0;
 int tbatt_pwroff_enable = 1;
 static int mcu_status = 0;
@@ -5582,7 +5583,8 @@ bool oplus_check_afi_update_condition(void)
 	chgid = oplus_vooc_get_fast_chg_type();
 	chgsub_type = oplus_vooc_convert_fast_chg_type(chgid);
 	oplus_vooc_print_log();
-	chg_err(" fastchg status[%d %d %d %d %d] charger info[%d %d %d %d %d]\n",
+	charger_xlog_printk(CHG_LOG_FULL,
+		" fastchg status[%d %d %d %d %d] charger info[%d %d %d %d %d]\n",
 		oplus_vooc_get_fast_chg_type(),
 		oplus_vooc_get_fastchg_to_normal(), oplus_vooc_get_fastchg_to_warm(),
 		chip->fastchg_to_ffc, chip->fastchg_ffc_status,
@@ -5594,10 +5596,10 @@ bool oplus_check_afi_update_condition(void)
 		}
 
 		if (CHARGER_SUBTYPE_FASTCHG_VOOC == chgsub_type) {	/* vooc */
-			chg_err(" true 1: vooc\n");
+			charger_xlog_printk(CHG_LOG_FULL, " true 1: vooc\n");
 			return true;
 		} else if (oplus_gauge_get_fast_chg_type() == 1 && chgsub_type == 2 && chgid ==1) {
-			chg_err(" true 2: vooc recv data:0x00\n");
+			charger_xlog_printk(CHG_LOG_FULL, " true 2: vooc recv data:0x00\n");
 			return true;
 		} else {
 			if (chgsub_type) {								/* svooc */
@@ -5606,7 +5608,7 @@ bool oplus_check_afi_update_condition(void)
 					|| oplus_vooc_get_fastchg_dummy_started())) {
 					if ((chip->fastchg_to_ffc == true && chip->fastchg_ffc_status)	/* ffc */
 						|| chip->batt_full) { 										/* full */
-						chg_err(" true 2: svooc\n");
+						charger_xlog_printk(CHG_LOG_FULL, " true 2: svooc\n");
 						return true;
 					} else {
 						return false;
@@ -5614,7 +5616,7 @@ bool oplus_check_afi_update_condition(void)
 				}
 				return false;
 			} else {										/* normal charger or unkown */
-				chg_err(" true 3: ormal charger or others unkown\n");
+				charger_xlog_printk(CHG_LOG_FULL, " true 3: ormal charger or others unkown\n");
 				return true;
 			}
 		}
@@ -5651,7 +5653,7 @@ static void oplus_chg_get_battery_data(struct oplus_chg_chip *chip)
 		chip->temperature = oplus_chg_match_temp_for_chging();
 		chip->soc = oplus_gauge_get_prev_batt_soc();
 		chip->batt_rm = oplus_gauge_get_prev_remaining_capacity() * chip->vbatt_num;
-		printk(KERN_ERR "[%s] will not call oplus_gauge_protect_check\n", __func__);
+		charger_xlog_printk(CHG_LOG_FULL, "will not call oplus_gauge_protect_check\n");
 	} else {
 		if (oplus_plat_gauge_is_support() && chip->mmi_chg != 0
 				&& (mcu_status == 1 && oplus_vooc_get_reset_gpio_status() == 1)) {
@@ -5681,7 +5683,7 @@ static void oplus_chg_get_battery_data(struct oplus_chg_chip *chip)
 		chip->batt_cc = oplus_gauge_get_batt_cc() * chip->vbatt_num;
 		chip->batt_soh = oplus_gauge_get_batt_soh();
 		chip->batt_rm = oplus_gauge_get_remaining_capacity() * chip->vbatt_num;
-		printk(KERN_ERR "[%s] will call oplus_gauge_protect_check\n", __func__);
+		charger_xlog_printk(CHG_LOG_FULL, "will call oplus_gauge_protect_check\n");
 	}
 
 	if (oplus_check_afi_update_condition()) {
@@ -7125,7 +7127,7 @@ static void oplus_chg_kpoc_power_off_check(struct oplus_chg_chip *chip)
 static void oplus_chg_print_log(struct oplus_chg_chip *chip)
 {
 	if(chip->vbatt_num == 1){
-		charger_xlog_printk(CHG_LOG_CRTI,
+		charger_xlog_printk(CHG_LOG_FULL,
 			" CHGR[ %d / %d / %d / %d / %d ], "
 			"BAT[ %d / %d / %d / %d / %d / %d ], "
 			"GAUGE[ %d / %d / %d / %d / %d / %d / %d / %d / %d / %d / %d / %d / %d / %d / %d / %d / %d / %d / %d / %d / %d / %d /], "
@@ -7147,13 +7149,13 @@ static void oplus_chg_print_log(struct oplus_chg_chip *chip)
 			chip->tbatt_status, chip->stop_voter, chip->notify_code,
 			chip->otg_switch, chip->mmi_chg, chip->boot_reason, chip->boot_mode,
 			chip->chargerid_volt, chip->chargerid_volt_got);
-		charger_xlog_printk(CHG_LOG_CRTI, "FFC: fastchg_to_ffc:%d,fastchg_ffc_status:%d,ffc_temp_status:%d",
+		charger_xlog_printk(CHG_LOG_FULL, "FFC: fastchg_to_ffc:%d,fastchg_ffc_status:%d,ffc_temp_status:%d",
 			chip->fastchg_to_ffc, chip->fastchg_ffc_status, chip->ffc_temp_status);
 #ifdef OPLUS_CUSTOM_OP_DEF
-		charger_xlog_printk(CHG_LOG_CRTI, "ffc_exit_chg_break:%d", chip->ffc_exit_chg_break);
+		charger_xlog_printk(CHG_LOG_FULL, "ffc_exit_chg_break:%d", chip->ffc_exit_chg_break);
 #endif
 	}else{
-		charger_xlog_printk(CHG_LOG_CRTI,
+		charger_xlog_printk(CHG_LOG_FULL,
 			" CHGR[ %d / %d / %d / %d / %d ], \
 			BAT[ %d / %d / %d / %d / %d / %d ], \
 			GAUGE[ %d / %d / %d / %d / %d / %d / %d / %d / %d ], "
@@ -7169,10 +7171,10 @@ static void oplus_chg_print_log(struct oplus_chg_chip *chip)
 			chip->tbatt_status, chip->stop_voter, chip->notify_code,
 			chip->otg_switch, chip->mmi_chg, chip->boot_reason, chip->boot_mode,
 			chip->chargerid_volt, chip->chargerid_volt_got);
-		charger_xlog_printk(CHG_LOG_CRTI, "FFC: fastchg_to_ffc:%d,fastchg_ffc_status:%d,ffc_temp_status:%d",
+		charger_xlog_printk(CHG_LOG_FULL, "FFC: fastchg_to_ffc:%d,fastchg_ffc_status:%d,ffc_temp_status:%d",
 			chip->fastchg_to_ffc, chip->fastchg_ffc_status, chip->ffc_temp_status);
 #ifdef OPLUS_CUSTOM_OP_DEF
-		charger_xlog_printk(CHG_LOG_CRTI, "ffc_exit_chg_break:%d", chip->ffc_exit_chg_break);
+		charger_xlog_printk(CHG_LOG_FULL, "ffc_exit_chg_break:%d", chip->ffc_exit_chg_break);
 #endif
 	}
 
@@ -8814,7 +8816,7 @@ int oplus_chg_match_temp_for_chging(void)
 		chging_temp = batt_temp;
 	}
 	g_charger_chip->tbatt_temp = batt_temp;
-	charger_xlog_printk(CHG_LOG_CRTI, "batt_temp=%d,shell_temp=%d,chging_temp=%d\n",
+	charger_xlog_printk(CHG_LOG_FULL, "batt_temp=%d,shell_temp=%d,chging_temp=%d\n",
 						batt_temp, shell_temp, chging_temp);
 	return chging_temp;
 }
